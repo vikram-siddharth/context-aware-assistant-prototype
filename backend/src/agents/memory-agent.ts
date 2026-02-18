@@ -27,17 +27,6 @@ const ExtractedMemoriesSchema = z.object({
   ),
 });
 
-// Schema for relevance scoring
-const RelevanceScoreSchema = z.object({
-  relevantMemories: z.array(
-    z.object({
-      memoryId: z.string(),
-      relevanceScore: z.number().min(0).max(10).describe('0-10 score indicating relevance'),
-      reason: z.string().optional().describe('Why this memory is relevant'),
-    })
-  ),
-});
-
 export class MemoryAgent {
   private memoryRepository: Repository<Memory>;
   private model: any;
@@ -146,68 +135,6 @@ CRITICAL RULES:
     } catch (error) {
       console.error('[MemoryAgent] Error in extractMemories:', error);
       return { newMemories: [] };
-    }
-  }
-
-  /**
-   * Retrieve memories relevant to a given query
-   * Returns memories sorted by relevance (most relevant first)
-   */
-  async retrieveRelevantMemories(query: string): Promise<Memory[]> {
-    try {
-      // Fetch all active memories
-      const allMemories = await this.memoryRepository.find({
-        where: { active: true },
-        order: { created_at: 'DESC' },
-      });
-
-      // If no memories exist, return empty array
-      if (allMemories.length === 0) {
-        return [];
-      }
-
-      // Build memory list for the LLM
-      const memoryList = allMemories
-        .map((m) => `ID: ${m.id}\nFact: ${m.fact}\nCategory: ${m.category}\nPersistence: ${m.persistence}`)
-        .join('\n\n');
-
-      // Call Claude to score relevance
-      const systemPrompt = `You are a memory relevance scorer. Given a user query and a list of stored memories, determine which memories are relevant to the query.
-
-Score each memory from 0-10 based on relevance:
-- 10: Directly addresses the query or is a critical constraint
-- 7-9: Highly relevant, would influence the response
-- 4-6: Moderately relevant, provides useful context
-- 1-3: Tangentially related
-- 0: Not relevant
-
-Return ONLY memories with a score >= 5.`;
-
-      const result = await generateObject({
-        model: this.model,
-        schema: RelevanceScoreSchema,
-        system: systemPrompt,
-        prompt: `Query: "${query}"\n\nMemories:\n${memoryList}\n\nScore the relevance of each memory to this query.`,
-      });
-
-      // Map memory IDs to actual Memory objects and sort by relevance
-      const relevantMemoriesData = result.object.relevantMemories || [];
-
-      const relevantMemories = relevantMemoriesData
-        .map((item) => {
-          const memory = allMemories.find((m) => m.id === item.memoryId);
-          return memory ? { memory, score: item.relevanceScore } : null;
-        })
-        .filter((item): item is { memory: Memory; score: number } => item !== null)
-        .sort((a, b) => b.score - a.score) // Sort by score descending
-        .map((item) => item.memory);
-
-      console.log(`[MemoryAgent] Retrieved ${relevantMemories.length} relevant memories for query`);
-      return relevantMemories;
-    } catch (error) {
-      console.error('[MemoryAgent] Error in retrieveRelevantMemories:', error);
-      // Return empty array on error - retrieval is best-effort
-      return [];
     }
   }
 

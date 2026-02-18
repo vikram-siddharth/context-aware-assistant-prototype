@@ -25,17 +25,6 @@ async function testMemoryAgent() {
       console.log(`- ${m.fact} (${m.category}, ${m.persistence})`);
     });
 
-    // Test 3: Retrieve relevant memories for a query
-    console.log('\n--- Test 3: Retrieving relevant memories ---');
-    const query = "I want to plan a running workout for tomorrow";
-    console.log('Query:', query);
-
-    const relevantMemories = await memoryAgent.retrieveRelevantMemories(query);
-    console.log('Relevant memories:', relevantMemories.length);
-    relevantMemories.forEach((m) => {
-      console.log(`- ${m.fact} (${m.category})`);
-    });
-
     console.log('\n✅ All tests completed successfully');
     process.exit(0);
   } catch (error) {
