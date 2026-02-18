@@ -110,15 +110,15 @@ This document captures key design decisions, tradeoffs, and reasoning as we buil
 
 2. **Memory IDs in system prompt** — Each memory now shows its ID so the LLM can reference it in tool calls.
 
-3. **Conservative threshold** — The Orchestrator should only propose memory changes when the user's statement directly and clearly addresses the stored fact. No inference from indirect evidence. For preferences, the bar is even higher.
+3. **Inference-based updates with confirmation** — The Orchestrator may propose memory changes based on both explicit statements and reasonable inferences. For example, if a user with a stored knee injury says "I went for a 5k run last weekend," the Orchestrator should infer the injury may have healed and ask the user to confirm. The user confirmation step is the primary safeguard — it doesn't matter whether the trigger was explicit or inferred, because the user approves before any change is made.
 
-4. **User confirmation flow** — When the Orchestrator detects a contradiction, it asks the user to confirm, phrased forward-looking (e.g., "Can I update my notes to reflect that your shoulder is no longer dislocated?"). If the user confirms, the change is made. If the user doesn't respond, the Orchestrator may proceed based on the explicit statement but must inform the user of its decision.
+4. **User confirmation flow** — When the Orchestrator detects a potential memory change, it asks the user to confirm, phrased forward-looking (e.g., "Can I update my notes to reflect that your shoulder is no longer dislocated?"). If the user confirms, the change is made. If the user doesn't respond, the Orchestrator may proceed based on its best judgment but must inform the user of its decision.
 
 5. **Removed `resolveConflictsAsync`/`resolveConflict`** — The fire-and-forget LLM classification is no longer needed. The Orchestrator handles everything within its normal agentic loop.
 
 The extraction LLM's conflict detection still exists in `memory-agent.ts` but is supplementary. The Orchestrator tool is the reliable path.
 
-**Tradeoff:** The conservatism threshold is a heuristic, not a clean rule — "explicit" vs. "inferred" is a spectrum. The user confirmation step is the real safeguard; the threshold just reduces unnecessary confirmation prompts.
+**Evolution of this decision:** We initially restricted the Orchestrator to only act on explicit user statements, not inferences. This was an overcorrection in response to a false invalidation bug (a swimming preference was deleted without cause). We later recognized that a real assistant should make reasonable inferences — the confirmation step provides sufficient safety regardless of whether the trigger is explicit or inferred.
 
 ---
 
@@ -128,17 +128,38 @@ The extraction LLM's conflict detection still exists in `memory-agent.ts` but is
 
 **Decision:** Add an `update_memory` tool to the Orchestrator alongside `invalidate_memory`. The Orchestrator now manages the full memory lifecycle: invalidation (for contradicted facts) and updates (for evolved facts). The extraction agent continues to handle brand new facts that don't relate to any existing memory. If something overlaps with or refines an existing memory, the extraction agent skips it — that's the Orchestrator's job.
 
+The Orchestrator recognizes three categories of memory changes:
+- **Contradictions** — the fact is no longer true (e.g., "my wound has healed")
+- **Refinements** — more specific information about the same fact (e.g., "my shoulder is dislocated" when the stored memory says "has a shoulder injury")
+- **Evolution** — the condition has changed (e.g., "my shoulder is sore but no longer dislocated")
+
+**Same-session elaboration fix:** A gap was discovered where a user elaborates on a fact within the same session (e.g., "I have a shoulder injury" then "my shoulder is dislocated"). The extraction agent skipped it as overlapping, and the Orchestrator didn't trigger an update because it didn't look like a contradiction. The fix: the Orchestrator proactively checks whether new details in the conversation refine an existing memory and uses `update_memory` to capture the more detailed version.
+
 **Tradeoff:** This gives the Orchestrator more responsibility, but it's the only component with enough context (memories + conversation history + user message) to make these judgment calls reliably.
 
 ---
 
-## Decision 9: Session-Level Memory Retrieval (Phase 6)
+## Decision 9: Session-Level Memory Retrieval with Contextual Display (Phase 6)
 
 **Context:** Memory retrieval was happening per message, causing the "Checking if I remember anything relevant" thinking event to appear on every turn. This was repetitive and unnatural. Additionally, per-message retrieval was unnecessary in a fitness context where all physical constraints are always relevant.
 
-**Decision:** Load all active memories once when the first message of a session arrives. Include them in the system prompt for every subsequent message in that session. Emit a thinking event listing remembered facts only on the first message, and only if there are memories. If there are no memories, emit nothing.
+**Decision:** Load all active memories once when the first message of a session arrives. Include them in the system prompt for every subsequent message in that session. However, do not list all memories in the chat at session start. Only surface a memory in a thinking event when it actively influences a specific decision — for example, "Keeping in mind your knee injury, I'll avoid high-impact exercises."
 
-**Rationale:** A human trainer mentally reviews what they know about a client before a session, not before every sentence. This mirrors that pattern and produces a more natural conversational flow.
+**Rationale:** A human trainer mentally reviews what they know about a client before a session, but doesn't recite the client's entire file out loud. They mention relevant facts only when making a specific recommendation. This mirrors that pattern and produces a more natural conversational flow. The memory inspection UI (planned enhancement) provides a dedicated place for users to review all stored memories.
+
+**Evolution of this decision:** Initially we listed all memories at session start. This felt mechanical — especially as the number of memories grew. The shift to contextual display means the LLM has full access to all memories (they're in the system prompt) but only narrates the ones that matter for the current interaction.
+
+---
+
+## Decision 10: Remove Per-Message Relevance Scoring (Phase 6)
+
+**Context:** The Memory Agent contained relevance scoring logic — an LLM call that scored each memory from 0-10 against the current user query and filtered to only relevant ones. This was built for the original per-message retrieval design.
+
+**Decision:** Remove the relevance scoring code from the Memory Agent. With session-level retrieval of all active memories (Decision 9), every active memory is loaded into the system prompt at session start. Per-message relevance scoring is dead code — it adds an unnecessary LLM call that is never reached.
+
+**Rationale:** The domain-specific nature of the assistant (fitness) means all user facts are potentially relevant to any interaction. The LLM, with all memories in its system prompt, is better positioned to decide which memories to surface in context than a separate scoring step.
+
+**When to reintroduce:** If the system expanded to multiple domains or a user accumulated hundreds of memories, relevance scoring (preferably embedding-based for efficiency) would be needed to select the right subset for the context window. Noted in the production enhancements appendix.
 
 ---
 
@@ -159,6 +180,10 @@ These enhancements were discussed during development and deemed valuable for pro
 6. **Embedding-based memory retrieval:** Replace LLM-based relevance scoring with vector similarity search for faster, more scalable memory retrieval.
 
 7. **User confirmation for domain actions:** Currently, the Planning Agent designs a workout and the Task Agent writes it to the database without user approval. In higher-stakes domains (financial transactions, medical recommendations, bookings), you'd want a confirmation step between planning and execution — the same pattern we built for memory invalidation. The Orchestrator would present the proposed action, wait for user approval, and only then delegate to the Task Agent. For the workout domain this is low-risk, but the architecture should support it.
+
+8. **Transaction handling for tool execution:** The Orchestrator's tool execution loop is not wrapped in a database transaction. If the loop calls multiple tools and one fails partway through, earlier writes are not rolled back. For the workout domain the consequence is minor (a duplicate workout at worst), but in higher-stakes domains (financial transactions, multi-step bookings), you'd want the entire tool execution sequence to be atomic — all operations succeed or all are rolled back.
+
+9. **Dynamic tool registration by agents:** Currently, the Orchestrator's `executeTool` function is a manual routing table — a switch/if-else that maps each tool name to the correct agent. This grows linearly with the number of tools. A more scalable pattern would have each agent register the tools it handles, so the Orchestrator looks up the responsible agent automatically. Adding a new tool would only require changes in the relevant agent, not in the Orchestrator.
 
 ---
 
