@@ -83,22 +83,28 @@ EXISTING MEMORIES (do NOT extract anything related to these):
 ${existingFactsList || '(none)'}
 
 FACT FORMAT:
-- Store each fact as a simple second-person statement about the user.
-- Examples: "Has a dislocated shoulder", "Likes swimming", "Prefers Friday for workouts", "Wants to run a marathon"
-- Never use "the user" or "an user" — just state the fact directly as if describing the person.
+- Store each fact as a second-person verb phrase (as if completing "You ...").
+- Examples: "have a dislocated shoulder", "like swimming", "prefer Friday for workouts", "want to run a marathon"
+- Always use second-person verb forms (have, like, prefer, want, enjoy, need, are) — never third-person (has, likes, prefers, wants, enjoys, needs, is).
+- Never use "the user" or "an user" — just state the fact directly as a second-person phrase.
 
 CONTEXT-DEPENDENT STATEMENTS — DO NOT EXTRACT:
 - If a statement is clearly an answer to a specific question in the conversation (e.g., "Friday is best" in response to "What day works for you this week?"), it is a one-time scheduling decision, NOT a durable fact.
+- Distinguish between context-specific desires and durable preferences. A conditional or request-style statement ("I would like to swim", "I'd like to do yoga", "Can we do cardio?") in response to a prompt like "How can I help you?" is a one-time intent for this session — NOT a lasting preference. A general statement about enjoyment or habit ("I like to swim", "I enjoy yoga", "I do cardio three times a week") IS a durable fact.
 - Only extract facts that would still be true and relevant weeks or months from now.
 - Ask yourself: "If I recalled this fact in a completely different conversation weeks later, would it still be useful?" If not, skip it.
 - Examples of what NOT to extract:
   - "Friday" in response to "When should we schedule this?" (one-time answer)
   - "30 minutes" in response to "How long do you want today's workout?" (single-session choice)
   - "Let's do legs" in response to "What should we focus on today?" (today's choice, not a lasting preference)
+  - "I would like to swim" in response to "How can I help you?" (context-specific desire, not a durable preference)
+  - "I'd like a strength workout" in response to "What are you looking for today?" (session intent, not a lasting preference)
 - Examples of what TO extract:
   - "I always prefer working out on Fridays" (enduring preference)
   - "I usually do 30-minute sessions" (habitual pattern)
   - "I hate leg day" (lasting preference)
+  - "I like to swim" (general enjoyment — durable preference)
+  - "I enjoy morning runs" (habitual pattern — durable preference)
 
 CRITICAL RULES:
 - If the user's message overlaps with, refines, updates, or contradicts an existing memory, DO NOT extract it. That is handled elsewhere.

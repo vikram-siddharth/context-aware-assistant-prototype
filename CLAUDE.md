@@ -65,7 +65,7 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - Accepts optional `onEvent` callback (`EventCallback`) for SSE streaming
 - Exports `OrchestratorEvent` type: `{ type: 'thinking' | 'action' | 'result' | 'error', content: string }`
 - Emits human-readable events at each stage (memory recall, tool execution, final response)
-- `rephraseFact()` converts raw DB facts to natural second-person English (e.g. "Has a knee injury" → "I remember you have a knee injury")
+- `rephraseFact()` prepends "I remember you" to stored facts (facts are already second-person, e.g. "have a knee injury" → "I remember you have a knee injury")
 - `describeToolAction()` maps tool names to user-friendly descriptions (no tool names or JSON exposed)
 - `buildSystemPrompt()` includes memory IDs in the user context section and instructs the LLM to use `invalidate_memory` when it detects contradictions
 - 400ms delay between rapid events so the UI can render them; final result event has no delay

@@ -158,6 +158,8 @@ These enhancements were discussed during development and deemed valuable for pro
 
 6. **Embedding-based memory retrieval:** Replace LLM-based relevance scoring with vector similarity search for faster, more scalable memory retrieval.
 
+7. **User confirmation for domain actions:** Currently, the Planning Agent designs a workout and the Task Agent writes it to the database without user approval. In higher-stakes domains (financial transactions, medical recommendations, bookings), you'd want a confirmation step between planning and execution — the same pattern we built for memory invalidation. The Orchestrator would present the proposed action, wait for user approval, and only then delegate to the Task Agent. For the workout domain this is low-risk, but the architecture should support it.
+
 ---
 
 *— End of document —*

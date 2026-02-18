@@ -85,47 +85,12 @@ export class Orchestrator {
 
   /**
    * Rephrase a raw memory fact into natural second-person recall.
-   * Memory facts from the DB are third-person descriptions like
-   * "Has a knee injury from running" or "Prefers morning workouts".
-   * We convert the leading verb to second-person so the articles and
-   * phrasing stay intact:
-   *   "Has a knee injury" → "I remember you have a knee injury"
-   *   "Is training for a 5K" → "I remember you are training for a 5K"
+   * Memory facts are stored as second-person verb phrases (e.g., "have a knee injury").
+   * We just prepend "I remember you" to form a complete sentence.
    */
   private rephraseFact(fact: string): string {
-    let clean = fact.replace(/\.$/, '');
-
-    // Convert third-person verbs to second-person
-    const conversions: [RegExp, string][] = [
-      [/^Has\b\s*/i, 'have '],
-      [/^Had\b\s*/i, 'had '],
-      [/^Is\b\s*/i, 'are '],
-      [/^Was\b\s*/i, 'were '],
-      [/^Wants to\b\s*/i, 'want to '],
-      [/^Prefers\b\s*/i, 'prefer '],
-      [/^Likes\b\s*/i, 'like '],
-      [/^Dislikes\b\s*/i, 'dislike '],
-      [/^Needs\b\s*/i, 'need '],
-      [/^Enjoys\b\s*/i, 'enjoy '],
-    ];
-
-    for (const [pattern, replacement] of conversions) {
-      if (pattern.test(clean)) {
-        clean = clean.replace(pattern, replacement);
-        return `I remember you ${clean}`;
-      }
-    }
-
-    // Fallback for facts without a recognized leading verb
-    clean = clean.charAt(0).toLowerCase() + clean.slice(1);
-
-    // Skip article if one is already present or the phrase starts with a gerund
-    if (/^(a |an |the |my |your )/i.test(clean) || /^\w+ing\b/.test(clean)) {
-      return `I remember you mentioned ${clean}`;
-    }
-
-    const article = /^[aeiou]/i.test(clean) ? 'an' : 'a';
-    return `I remember you mentioned ${article} ${clean}`;
+    const clean = fact.replace(/\.$/, '');
+    return `I remember you ${clean}`;
   }
 
   /**
