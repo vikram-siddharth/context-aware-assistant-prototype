@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { CoreMessage } from 'ai';
-import { memoryAgent } from '../agents/memory-agent';
+import { memoryAgent, MemoryRefinement } from '../agents/memory-agent';
 import { taskAgent } from '../agents/task-agent';
 import { planningAgent } from '../agents/planning-agent';
 import { sessionController } from '../session/session-controller';
@@ -84,16 +84,6 @@ export class Orchestrator {
   }
 
   /**
-   * Rephrase a raw memory fact into natural second-person recall.
-   * Memory facts are stored as second-person verb phrases (e.g., "have a knee injury").
-   * We just prepend "I remember you" to form a complete sentence.
-   */
-  private rephraseFact(fact: string): string {
-    const clean = fact.replace(/\.$/, '');
-    return `I remember you ${clean}`;
-  }
-
-  /**
    * Process a user message and generate a response
    *
    * @param userMessage - The user's message
@@ -121,32 +111,47 @@ export class Orchestrator {
       sessionController.setSessionMemories(sessionId, memories);
       console.log(`[Orchestrator] Loaded ${memories.length} memories for new session ${sessionId}`);
 
-      // Emit thinking events only on first message, only if there are memories
-      if (memories.length > 0) {
-        await this.emit(onEvent, { type: 'thinking', content: 'Checking if I remember anything relevant...' });
-        for (const memory of memories) {
-          const rephrased = this.rephraseFact(memory.fact);
-          await this.emit(onEvent, { type: 'thinking', content: rephrased });
-        }
-      }
+      // Memories are loaded into context but NOT announced at session start.
+      // They only surface via thinking events when they actively influence a decision.
     } else {
       // Subsequent messages: use cached memories, no events
       memories = sessionController.getSessionMemories(sessionId) || [];
       console.log(`[Orchestrator] Using ${memories.length} cached memories for session ${sessionId}`);
     }
 
-    // Run extraction best-effort (async, per-message)
-    memoryAgent.extractMemories(userMessage).then((result) => {
-      if (result.newMemories.length > 0) {
-        // Add newly extracted memories to the session cache
-        const cached = sessionController.getSessionMemories(sessionId) || [];
-        sessionController.setSessionMemories(sessionId, [...cached, ...result.newMemories]);
-        console.log(`[Orchestrator] Added ${result.newMemories.length} new memories to session cache`);
-      }
-    });
+    // Run extraction (awaited so we can use refinement signals in the prompt)
+    const extractionResult = await memoryAgent.extractMemories(userMessage);
 
-    // Step 2: Build system prompt with memory context
-    const systemPrompt = this.buildSystemPrompt(memories);
+    if (extractionResult.newMemories.length > 0) {
+      const cached = sessionController.getSessionMemories(sessionId) || [];
+      sessionController.setSessionMemories(sessionId, [...cached, ...extractionResult.newMemories]);
+      console.log(`[Orchestrator] Added ${extractionResult.newMemories.length} new memories to session cache`);
+    }
+
+    // Auto-apply refinements detected by extraction.
+    // The user explicitly provided more specific info — their own words are the confirmation.
+    const appliedRefinements: MemoryRefinement[] = [];
+    if (extractionResult.refinements.length > 0) {
+      for (const ref of extractionResult.refinements) {
+        const updated = await memoryAgent.updateMemoryFact(ref.existingMemoryId, ref.suggestedUpdate);
+        if (updated) {
+          appliedRefinements.push(ref);
+          console.log(`[Orchestrator] Auto-applied refinement: "${ref.existingFact}" → "${ref.suggestedUpdate}"`);
+        }
+      }
+
+      if (appliedRefinements.length > 0) {
+        await this.emit(onEvent, { type: 'action', content: 'Updating my notes...' });
+
+        // Refresh session cache so the system prompt and future messages see updated facts
+        const refreshed = await memoryAgent.getAllMemories();
+        sessionController.setSessionMemories(sessionId, refreshed);
+        memories = refreshed;
+      }
+    }
+
+    // Step 2: Build system prompt with memory context + applied refinement notifications
+    const systemPrompt = this.buildSystemPrompt(memories, appliedRefinements);
 
     // Step 3: Convert conversation history to Anthropic format
     const messages: Anthropic.MessageParam[] = [
@@ -482,7 +487,7 @@ export class Orchestrator {
   /**
    * Build a system prompt that includes relevant memories and any pending conflicts
    */
-  private buildSystemPrompt(memories: Memory[]): string {
+  private buildSystemPrompt(memories: Memory[], refinements: MemoryRefinement[] = []): string {
     const currentDate = new Date().toISOString().split('T')[0];
 
     let systemPrompt = `You are a friendly, conversational fitness buddy who helps users track workouts and create personalized plans.
@@ -514,40 +519,73 @@ Today's date is ${currentDate}.
 
     // Add memory context if available
     if (memories.length > 0) {
-      systemPrompt += '\n## User Context (Remember and Respect These)\n';
+      systemPrompt += '\n## User Context\n';
 
       memories.forEach((memory) => {
         systemPrompt += `- [${memory.category.toUpperCase()}] (ID: ${memory.id}) ${memory.fact}\n`;
       });
 
-      systemPrompt += '\nPay special attention to CONSTRAINT memories — these are hard requirements you MUST respect.\n';
-
       systemPrompt += `
+### How to Use These Memories
+- Do NOT list or announce memories at the start of a conversation.
+- Only surface a memory when it actively influences a specific decision you are making right now. Mention it naturally as part of your reasoning — for example, "Keeping your knee injury in mind, I'll focus on low-impact options."
+- Constraint memories are hard requirements — always respect them when planning or suggesting activities.
+- If a memory is not relevant to the current request, do not mention it at all.
+
 ## Managing Memories
 
 You have tools to update or retire stored memories. Use them with care — here are the rules:
 
 ### When to Consider a Change
-- Only propose an update or retirement when the user's statement **directly and clearly** addresses the stored fact.
-- Do NOT infer memory changes from indirect evidence. For example, "I went for a run" does NOT mean a knee injury has healed. "I did some yoga" does NOT mean they've dropped a strength-training goal.
-- For PREFERENCE memories, be especially conservative. Only propose a change if the user clearly and explicitly expresses a different preference (e.g., "Actually, I've switched to evening workouts" — not just "I worked out this morning").
+There are three categories of memory change. Be alert for all of them:
+
+**Contradictions** — a stored fact is no longer true.
+Example: You know "has a knee injury" but the user says "my knee is fully healed now."
+Action: Confirm, then use invalidate_memory.
+
+**Refinements** — the user provides more specific or detailed information about an existing fact without changing its core meaning.
+Example: You know "has a shoulder injury" but the user says "my shoulder is dislocated."
+Action: Confirm, then use update_memory with the more precise version.
+
+**Evolution** — the condition or fact has changed but not disappeared entirely.
+Example: You know "has a broken ankle" but the user says "my ankle is mostly healed, just a bit stiff."
+Action: Confirm, then use update_memory to reflect the current state.
+
+### Inference-Based Updates
+- You may infer that a stored fact has changed based on reasonable evidence, not just explicit statements.
+- If the user says something that implies a stored fact may no longer be accurate (e.g., "I went for a 10K run" when you know they have a knee injury), treat it as a signal worth checking — not as proof.
+- When you notice an implication like this, ask the user conversationally to confirm. For example: "Nice — a 10K! Last I knew your knee was giving you trouble. Has that cleared up?"
+- Do NOT silently update or retire a memory based on inference. Always confirm first.
+- Use good judgment about what counts as a reasonable inference. "I went for a run" with a stored knee injury is worth asking about. "I did some yoga" with a strength-training goal is not — those are compatible.
 
 ### Confirmation Before Acting
 - Before calling update_memory or invalidate_memory, **always ask the user to confirm first**.
 - **IMPORTANT: Never contradict what the user just said.** When the user tells you something new, acknowledge it and propose the update forward-looking. Do NOT restate the old fact as if it's still current.
   - BAD: "I have it noted that your shoulder is dislocated. Should I update that?" (restates old fact, ignores what the user just said)
-  - GOOD: "Got it — can I update my notes to reflect that your shoulder is no longer dislocated but just sore?" (acknowledges the new info and proposes the change)
+  - GOOD: "Got it — sounds like your shoulder has improved. Want me to update what I have on file so I keep that in mind going forward?" (acknowledges the new info, proposes the change naturally)
   - BAD: "You mentioned you prefer mornings — are you switching to evenings?" (frames the old fact as current)
-  - GOOD: "Sounds like you've moved to evening workouts — should I update my notes to reflect that?" (leads with the new info)
+  - GOOD: "Sounds like you've moved to evening workouts — should I remember that going forward?" (leads with the new info)
 - If the user confirms the change, proceed with the appropriate tool call.
-- If the user ignores your question and moves on to a different topic, you may proceed with the change in your next response, but briefly mention what you decided (e.g., "By the way, I updated my notes to reflect that your shoulder is just sore now — let me know if that's not right.").
+- If the user does not respond to your question and moves on to a different topic, you may proceed with the change, but briefly mention what you did (e.g., "By the way, I've noted that your shoulder is feeling better now — let me know if that's not right.").
 
 ### Choosing the Right Tool
-- **update_memory**: The user refines or evolves an existing fact without fully contradicting it. For example, "has a broken ankle" evolving to "has a swollen ankle", or "runs 3 times a week" changing to "runs 5 times a week".
-- **invalidate_memory**: The user indicates a stored fact is no longer true at all. For example, a knee injury has fully healed, or a goal has been dropped entirely.
+- **update_memory**: Use for refinements and evolution — the fact is being updated, not erased.
+- **invalidate_memory**: Use for contradictions — the fact is no longer true at all and should be retired.
 
 Use the memory ID from the User Context section above.
 `;
+    }
+
+    // Notify the LLM about refinements that were already applied
+    if (refinements.length > 0) {
+      systemPrompt += '\n## Recently Updated Memories\n';
+      systemPrompt += 'Based on what the user just said, the following memories were automatically updated with more specific information:\n\n';
+
+      for (const ref of refinements) {
+        systemPrompt += `- "${ref.existingFact}" → "${ref.suggestedUpdate}" (${ref.reason})\n`;
+      }
+
+      systemPrompt += '\nBriefly and naturally acknowledge these updates in your response — for example, "Got it, I\'ll keep in mind that your shoulder is dislocated" — woven into whatever else you\'re saying. Do not use technical language like "updated my records" or "noted in the system."\n';
     }
 
     return systemPrompt;

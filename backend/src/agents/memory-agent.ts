@@ -8,12 +8,20 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-export interface ExtractionResult {
-  newMemories: Memory[];
+export interface MemoryRefinement {
+  existingMemoryId: string;
+  existingFact: string;
+  suggestedUpdate: string;
+  reason: string;
 }
 
-// Schema for extracted memories
-const ExtractedMemoriesSchema = z.object({
+export interface ExtractionResult {
+  newMemories: Memory[];
+  refinements: MemoryRefinement[];
+}
+
+// Schema for extracted memories and detected refinements
+const ExtractionSchema = z.object({
   memories: z.array(
     z.object({
       fact: z.string().describe('The durable user fact to remember'),
@@ -23,6 +31,14 @@ const ExtractedMemoriesSchema = z.object({
       persistence: z.enum(['permanent', 'long_term', 'short_term']).describe(
         'permanent: indefinite (e.g., chronic condition), long_term: months/years, short_term: weeks'
       ),
+    })
+  ),
+  refinements: z.array(
+    z.object({
+      existingMemoryId: z.string().describe('The ID of the existing memory being refined'),
+      existingFact: z.string().describe('The current text of the existing memory'),
+      suggestedUpdate: z.string().describe('The more specific or evolved version of the fact, as a second-person verb phrase'),
+      reason: z.string().describe('Brief reason: "more specific", "condition evolved", etc.'),
     })
   ),
 });
@@ -58,10 +74,14 @@ export class MemoryAgent {
       });
 
       const existingFactsList = existingMemories
-        .map((m) => `- ${m.fact} (${m.category}, ${m.persistence})`)
+        .map((m) => `- (ID: ${m.id}) ${m.fact} [${m.category}, ${m.persistence}]`)
         .join('\n');
 
-      const systemPrompt = `You are a memory extraction agent. Your job is to identify genuinely NEW durable user facts from the user's message that should be remembered across sessions.
+      const systemPrompt = `You are a memory extraction agent. You have two jobs:
+1. Extract genuinely NEW durable user facts from the user's message.
+2. Detect REFINEMENTS — cases where the user's message provides more specific, detailed, or evolved information about an existing memory.
+
+## Job 1: New Fact Extraction
 
 ONLY extract facts that are:
 - Durable (likely to remain true across sessions)
@@ -78,9 +98,6 @@ Persistence levels:
 - permanent: Indefinite facts (chronic conditions, allergies, fundamental traits)
 - long_term: Months to years (fitness goals, ongoing preferences)
 - short_term: Weeks (temporary restrictions, short-term objectives)
-
-EXISTING MEMORIES (do NOT extract anything related to these):
-${existingFactsList || '(none)'}
 
 FACT FORMAT:
 - Store each fact as a second-person verb phrase (as if completing "You ...").
@@ -106,17 +123,35 @@ CONTEXT-DEPENDENT STATEMENTS — DO NOT EXTRACT:
   - "I like to swim" (general enjoyment — durable preference)
   - "I enjoy morning runs" (habitual pattern — durable preference)
 
-CRITICAL RULES:
-- If the user's message overlaps with, refines, updates, or contradicts an existing memory, DO NOT extract it. That is handled elsewhere.
-- Only extract facts that are completely independent from every existing memory.
-- If nothing genuinely new is present, return an empty array.
-- When in doubt, do not extract.`;
+## Job 2: Refinement Detection
+
+Check whether the user's message provides more specific or evolved information about any existing memory. If so, report it as a refinement.
+
+Types of refinement:
+- **More specific**: "have a shoulder injury" → user says "my shoulder is dislocated" → suggest "have a dislocated shoulder"
+- **Evolved condition**: "have a broken ankle" → user says "my ankle is mostly healed, just stiff" → suggest "have a stiff ankle (recovering from break)"
+- **Updated detail**: "run 3 times a week" → user says "I've been running 5 times a week" → suggest "run 5 times a week"
+
+Refinement rules:
+- Use the existing memory's ID from the list below.
+- Write the suggestedUpdate in the same format as existing facts (second-person verb phrase).
+- Only report refinements where the user's message genuinely adds specificity or reflects a change. Do not report refinements for unrelated statements.
+- Contradictions (fact is no longer true at all) are NOT refinements — skip those, they are handled elsewhere.
+
+EXISTING MEMORIES (reference by ID for refinements; do NOT extract new facts related to these):
+${existingFactsList || '(none)'}
+
+## Output Rules
+- If nothing genuinely new is present, return an empty memories array.
+- If no refinements are detected, return an empty refinements array.
+- When in doubt about a new fact, do not extract.
+- When in doubt about a refinement, do not report it.`;
 
       const result = await generateObject({
         model: this.model,
-        schema: ExtractedMemoriesSchema,
+        schema: ExtractionSchema,
         system: systemPrompt,
-        prompt: `User message: "${message}"\n\nExtract only genuinely new facts that are unrelated to any existing memory.`,
+        prompt: `User message: "${message}"\n\nExtract new facts and detect any refinements to existing memories.`,
       });
 
       // Save new memories to database
@@ -137,10 +172,22 @@ CRITICAL RULES:
         console.log('[MemoryAgent] No new memories extracted from message');
       }
 
-      return { newMemories: savedMemories };
+      // Collect refinements
+      const refinements: MemoryRefinement[] = (result.object.refinements || []).map((r) => ({
+        existingMemoryId: r.existingMemoryId,
+        existingFact: r.existingFact,
+        suggestedUpdate: r.suggestedUpdate,
+        reason: r.reason,
+      }));
+
+      if (refinements.length > 0) {
+        console.log(`[MemoryAgent] Detected ${refinements.length} refinement(s)`);
+      }
+
+      return { newMemories: savedMemories, refinements };
     } catch (error) {
       console.error('[MemoryAgent] Error in extractMemories:', error);
-      return { newMemories: [] };
+      return { newMemories: [], refinements: [] };
     }
   }
 

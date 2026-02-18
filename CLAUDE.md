@@ -39,9 +39,12 @@ Postgres (TypeORM)
 - The Task Agent is deterministic — no LLM calls, just CRUD
 - The Memory Agent calls the LLM only for extraction and relevance scoring
 - The Planning Agent calls the LLM only for workout plan generation
-- Memory extraction is best-effort (try/catch everything) — runs in parallel with retrieval via `Promise.all`
+- Memory extraction is best-effort (try/catch everything) — awaited before the main LLM call so refinement signals are available
 - Memory deduplication happens during extraction — pass existing active memories to the LLM and ask it to extract only new facts
-- Memory invalidation is orchestrator-driven — the orchestrator LLM uses the `invalidate_memory` tool when it notices a contradiction between the user's message and a stored memory
+- Memory management is orchestrator-driven — the orchestrator LLM uses `invalidate_memory` (contradictions) and `update_memory` (refinements/evolution) tools
+- Memory changes require user confirmation — the orchestrator asks conversationally before calling any memory tool
+- Inference-based memory updates are allowed — if the user says something that implies a stored fact may have changed, the orchestrator asks to confirm before updating (e.g., "I ran a 10K" when a knee injury is stored → ask if it's healed)
+- Three categories of memory change: contradictions (no longer true → invalidate), refinements (more specific info → update), evolution (condition changed → update)
 - Memory invalidation uses soft-delete (active = false) — invalidated memories stay in the database for history
 - The Planning Agent generates plans but does not write to storage — the Orchestrator saves plans via the Task Agent
 - The UI must never show tool names, raw JSON, SQL, embeddings, or prompt scaffolding
@@ -59,15 +62,16 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - Uses Anthropic SDK directly (@anthropic-ai/sdk) for full control over tool definitions
 - Implements agentic loop to handle multi-step tool usage (max 5 iterations)
 - Tool definitions use proper Anthropic `input_schema` format with explicit `type: 'object'`
-- Tools: `create_workout`, `get_workouts`, `create_plan`, `invalidate_memory`
-- Runs memory retrieval and extraction in parallel via `Promise.all`
+- Tools: `create_workout`, `get_workouts`, `create_plan`, `update_memory`, `invalidate_memory`
 - `processMessage()` returns `{ response: string }`
 - Accepts optional `onEvent` callback (`EventCallback`) for SSE streaming
 - Exports `OrchestratorEvent` type: `{ type: 'thinking' | 'action' | 'result' | 'error', content: string }`
-- Emits human-readable events at each stage (memory recall, tool execution, final response)
-- `rephraseFact()` prepends "I remember you" to stored facts (facts are already second-person, e.g. "have a knee injury" → "I remember you have a knee injury")
+- Emits human-readable events at each stage (tool execution, final response) — does NOT list all memories at session start
+- Memories are only surfaced in thinking events when they actively influence a specific decision (e.g., "Keeping your knee injury in mind...")
 - `describeToolAction()` maps tool names to user-friendly descriptions (no tool names or JSON exposed)
-- `buildSystemPrompt()` includes memory IDs in the user context section and instructs the LLM to use `invalidate_memory` when it detects contradictions
+- `buildSystemPrompt()` includes memory IDs in the user context section, instructs the LLM to manage memories via `update_memory` and `invalidate_memory`, and supports inference-based updates with confirmation
+- Extraction is awaited (not fire-and-forget) so refinement signals are available before the main LLM call
+- When extraction detects refinements, the Orchestrator auto-applies them via `memoryAgent.updateMemoryFact()` (the user's explicit words are the confirmation), refreshes the session cache, and tells the LLM what was updated so it can acknowledge naturally
 - 400ms delay between rapid events so the UI can render them; final result event has no delay
 
 ### Session Controller
@@ -76,9 +80,10 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - Methods: addMessage, getHistory, clearSession, getActiveSessions, hasSession
 
 ### Memory Agent
-- Extraction is best-effort, never throws errors — returns `ExtractionResult { newMemories, conflicts }`
-- Conflict detection during extraction is supplementary — the primary mechanism is the orchestrator's `invalidate_memory` tool
-- Exports `MemoryConflict` type: `{ existingMemoryId, existingFact, existingCategory, newInfo, reason }`
+- Extraction is best-effort, never throws errors — returns `ExtractionResult { newMemories, refinements }`
+- Extraction has two jobs: (1) extract genuinely new facts, (2) detect refinements to existing memories
+- Exports `MemoryRefinement` type: `{ existingMemoryId, existingFact, suggestedUpdate, reason }`
+- Refinements are returned to the Orchestrator (not acted on by the Memory Agent) — the Orchestrator auto-applies them and notifies the LLM so it can acknowledge naturally
 - Deduplication: passes existing active memories (with IDs) to LLM to avoid re-extraction
 - Retrieval uses LLM-based relevance scoring (0-10 scale, returns only scores ≥5)
 - All queries filter by `active: true` — invalidated memories are hidden from retrieval and extraction
