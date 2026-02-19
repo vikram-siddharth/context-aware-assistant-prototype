@@ -50,6 +50,8 @@ Postgres (TypeORM)
 - All workout creation goes through a two-turn confirmation: `create_plan` → present to user → `confirm_proposal` (mechanical enforcement)
 - `create_workout` is internal-only — called by `confirm_proposal` to write to DB, never exposed to the LLM as a callable tool
 - A guardrail in `processMessage` blocks `confirm_proposal` in the same turn as `create_plan`
+- Dynamic tool registration: each agent implements a `ToolProvider` interface with `getTools()`. The Orchestrator pulls tools from all agents at startup and builds a unified registry with collision detection. Orchestrator-level wrappers (`applyToolWrappers`) add session coordination (e.g., stashing proposals, refreshing memory caches) without agents needing session knowledge.
+- Session intent vs. durable facts: both the Memory Agent extraction prompt and the Orchestrator system prompt distinguish ephemeral session intent ("I'd like to swim") from durable facts ("I like swimming"). The linguistic test (conditional mood → session intent, indicative mood → durable fact) prevents storing one-time requests as lasting preferences.
 - The UI must never show tool names, raw JSON, SQL, embeddings, or prompt scaffolding
 
 ## Database Schema
@@ -64,21 +66,24 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 ### Orchestrator
 - Uses Anthropic SDK directly (@anthropic-ai/sdk) for full control over tool definitions
 - Implements agentic loop to handle multi-step tool usage (max 5 iterations)
-- Tool definitions use proper Anthropic `input_schema` format with explicit `type: 'object'`
+- Tool definitions come from agents via `ToolProvider.getTools()` — the Orchestrator builds a unified registry at startup via `buildToolRegistry()` and converts definitions to Anthropic format in `getToolDefinitions()`
+- `applyToolWrappers(registry)` wraps agent-owned tools with orchestrator-level coordination: `create_plan` gets session memories injected and stashes proposals; `confirm_proposal` reads/clears pending proposals from session state; `update_memory`/`invalidate_memory` refresh the session memory cache after mutations
+- `executeTool()` is a simple registry lookup — no switch/case routing
 - LLM-callable tools: `get_workouts`, `create_plan`, `confirm_proposal`, `update_memory`, `invalidate_memory`
 - `processMessage()` returns `{ response: string }`
 - Accepts optional `onEvent` callback (`EventCallback`) for SSE streaming
 - Exports `OrchestratorEvent` type: `{ type: 'thinking' | 'action' | 'result' | 'error', content: string }`
 - Emits human-readable events at each stage (tool execution, final response) — does NOT list all memories at session start
 - Memories are only surfaced in thinking events when they actively influence a specific decision (e.g., "Keeping your knee injury in mind...")
-- `describeToolAction()` maps tool names to user-friendly descriptions (no tool names or JSON exposed)
-- `buildSystemPrompt(sessionId, memories, refinements)` includes memory IDs in the user context section, instructs the LLM to manage memories via `update_memory` and `invalidate_memory`, supports inference-based updates with confirmation, includes "Workout Planning Flow" instructions (two-turn confirmation), and injects pending proposal context when one exists
+- `describeToolAction()` looks up `actionDescription` from the tool registry (no tool names or JSON exposed)
+- `buildSystemPrompt(sessionId, memories, refinements)` includes memory IDs in the user context section, instructs the LLM to manage memories via `update_memory` and `invalidate_memory`, supports inference-based updates with confirmation, includes "Session Intent vs. Durable Facts" section (preventing memory tools from being used on ephemeral requests), includes "Workout Planning Flow" instructions (two-turn confirmation), and injects pending proposal context when one exists
 - Extraction is awaited (not fire-and-forget) so refinement signals are available before the main LLM call
 - When extraction detects refinements, the Orchestrator auto-applies them via `memoryAgent.updateMemoryFact()` (the user's explicit words are the confirmation), refreshes the session cache, and tells the LLM what was updated so it can acknowledge naturally
 - 400ms delay between rapid events so the UI can render them; final result event has no delay
-- `create_plan` execution stashes the generated plan as a `PendingProposal` in session state (does NOT write to DB) and returns plan details + message telling the LLM to present and wait
-- `confirm_proposal` execution reads the pending proposal from session state, writes it to DB via `taskAgent.createWorkout()`, and clears the proposal
+- `create_plan` wrapper (in `applyToolWrappers`) injects session memories, calls Planning Agent, stashes the generated plan as a `PendingProposal` in session state (does NOT write to DB), and returns plan details + message telling the LLM to present and wait
+- `confirm_proposal` wrapper reads the pending proposal from session state, passes it to Task Agent's execute function, writes it to DB, and clears the proposal
 - Guardrail: `toolsCalledThisTurn` Set tracks tool names per `processMessage()` call; blocks `confirm_proposal` if `create_plan` was already called in the same turn
+- System prompt includes "Session Intent vs. Durable Facts" section with linguistic test (conditional mood = session intent, indicative mood = durable fact)
 - System prompt includes "Workout Planning Flow" section describing the two-turn confirmation flow (create_plan → confirm_proposal)
 - System prompt includes "Pending Workout Proposal" section (conditional) when a proposal exists, with instructions for confirm/modify/reject
 
@@ -91,8 +96,10 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - `clearSession()` clears all three Maps for the session
 
 ### Memory Agent
+- Implements `ToolProvider` — owns `update_memory` and `invalidate_memory` tools
 - Extraction is best-effort, never throws errors — returns `ExtractionResult { newMemories, refinements }`
 - Extraction has two jobs: (1) extract genuinely new facts, (2) detect refinements to existing memories
+- Extraction prompt includes "Session Intent vs. Durable Facts" section: conditional/volitional phrasing ("I'd like to swim", "I'd love to swim") is session intent and must NOT be extracted; general/habitual phrasing ("I like swimming", "I love swimming") is a durable fact and should be extracted
 - Exports `MemoryRefinement` type: `{ existingMemoryId, existingFact, suggestedUpdate, reason }`
 - Refinements are returned to the Orchestrator (not acted on by the Memory Agent) — the Orchestrator auto-applies them and notifies the LLM so it can acknowledge naturally
 - Deduplication: passes existing active memories (with IDs) to LLM to avoid re-extraction
@@ -102,6 +109,7 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - All database operations wrapped in try/catch
 
 ### Planning Agent
+- Implements `ToolProvider` — owns `create_plan` tool
 - Uses Vercel AI SDK's `generateObject()` with claude-sonnet-4-20250514
 - Generates structured workout plans with Zod schema validation
 - Receives: user request, relevant memories (constraints/preferences/goals), optional date
@@ -160,3 +168,5 @@ Integration test (`test-orchestrator.ts`) validates:
 - [x] Memory invalidation (orchestrator-driven via `invalidate_memory` tool, soft-delete with active flag)
 - [x] React frontend with chat UI
 - [x] User confirmation for domain actions (Decision 11: two-turn plan→confirm flow, guardrail, pending proposals in session state)
+- [x] Dynamic tool registration (Decision 12: ToolProvider interface, registry with collision detection, orchestrator wrappers)
+- [x] Session intent vs. durable facts filtering (linguistic test in Memory Agent extraction prompt and Orchestrator system prompt)

@@ -173,22 +173,34 @@ FACT FORMAT:
 - Always use second-person verb forms (have, like, prefer, want, enjoy, need, are) — never third-person (has, likes, prefers, wants, enjoys, needs, is).
 - Never use "the user" or "an user" — just state the fact directly as a second-person phrase.
 
-CONTEXT-DEPENDENT STATEMENTS — DO NOT EXTRACT:
-- If a statement is clearly an answer to a specific question in the conversation (e.g., "Friday is best" in response to "What day works for you this week?"), it is a one-time scheduling decision, NOT a durable fact.
-- Distinguish between context-specific desires and durable preferences. A conditional or request-style statement ("I would like to swim", "I'd like to do yoga", "Can we do cardio?") in response to a prompt like "How can I help you?" is a one-time intent for this session — NOT a lasting preference. A general statement about enjoyment or habit ("I like to swim", "I enjoy yoga", "I do cardio three times a week") IS a durable fact.
-- Only extract facts that would still be true and relevant weeks or months from now.
-- Ask yourself: "If I recalled this fact in a completely different conversation weeks later, would it still be useful?" If not, skip it.
-- Examples of what NOT to extract:
+SESSION INTENT vs. DURABLE FACTS — CRITICAL DISTINCTION:
+
+Distinguish between session intent and durable facts by their linguistic form, regardless of where they appear in the conversation:
+
+- **Session intent (DO NOT extract):** Conditional, volitional, or request phrasing that expresses what the user wants to do now — "I'd like to swim", "I'd love to swim", "I would like to do yoga", "I want a strength workout", "Can we do cardio?", "Let's focus on legs"
+- **Durable fact (DO extract):** General statements about enjoyment, habit, or ongoing taste — "I like swimming", "I love swimming", "I enjoy yoga", "I do cardio three times a week", "I hate leg day"
+
+The key test: "I'd like/love to X" (conditional mood → session intent) vs. "I like/love X" or "I like/love to X" as a general statement (indicative mood → durable fact). The contraction "I'd" = "I would" — it signals a wish for this session, not an enduring trait.
+
+Context-specific answers are also session intent — DO NOT extract:
   - "Friday" in response to "When should we schedule this?" (one-time answer)
   - "30 minutes" in response to "How long do you want today's workout?" (single-session choice)
-  - "Let's do legs" in response to "What should we focus on today?" (today's choice, not a lasting preference)
-  - "I would like to swim" in response to "How can I help you?" (context-specific desire, not a durable preference)
-  - "I'd like a strength workout" in response to "What are you looking for today?" (session intent, not a lasting preference)
+
+Only extract facts that would still be true and relevant weeks or months from now.
+Ask yourself: "If I recalled this fact in a completely different conversation weeks later, would it still be useful?" If not, skip it.
+
+Examples of what NOT to extract:
+  - "I'd like to swim" (session intent — conditional "I would like")
+  - "I'd love to swim" (session intent — conditional "I would love")
+  - "I want a 30-minute workout today" (single-session choice)
+  - "Let's do legs" (today's choice, not a lasting preference)
+  - "Can we do cardio?" (request for this session)
 - Examples of what TO extract:
+  - "I like swimming" / "I like to swim" (general enjoyment — durable preference)
+  - "I love swimming" (general enjoyment — durable preference)
   - "I always prefer working out on Fridays" (enduring preference)
   - "I usually do 30-minute sessions" (habitual pattern)
   - "I hate leg day" (lasting preference)
-  - "I like to swim" (general enjoyment — durable preference)
   - "I enjoy morning runs" (habitual pattern — durable preference)
 
 ## Job 2: Refinement Detection
