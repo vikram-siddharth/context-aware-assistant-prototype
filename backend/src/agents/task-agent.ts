@@ -1,6 +1,7 @@
 import { Repository } from 'typeorm';
 import { AppDataSource } from '../database/data-source';
 import { Workout, WorkoutStatus } from '../entities/Workout';
+import { ToolProvider, ToolDefinition } from './tool-provider';
 
 // Type definitions for inputs and outputs
 export interface CreateWorkoutInput {
@@ -26,11 +27,91 @@ export interface GetWorkoutsFilter {
   type?: string;
 }
 
-export class TaskAgent {
+export class TaskAgent implements ToolProvider {
   private workoutRepository: Repository<Workout>;
 
   constructor() {
     this.workoutRepository = AppDataSource.getRepository(Workout);
+  }
+
+  getTools(): ToolDefinition[] {
+    return [
+      {
+        name: 'get_workouts',
+        description:
+          'Retrieve workouts with optional filters. Use this when the user asks about their workout history or schedule.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            status: {
+              type: 'string',
+              enum: ['scheduled', 'completed', 'cancelled'],
+              description: 'Filter by workout status',
+            },
+            type: {
+              type: 'string',
+              description: 'Filter by workout type',
+            },
+            startDate: {
+              type: 'string',
+              description: 'Filter by start date (ISO format)',
+            },
+            endDate: {
+              type: 'string',
+              description: 'Filter by end date (ISO format)',
+            },
+          },
+        },
+        actionDescription: 'Looking up your workouts...',
+        execute: async (input: any) => {
+          const filter: GetWorkoutsFilter = {};
+          if (input.status) filter.status = input.status as WorkoutStatus;
+          if (input.type) filter.type = input.type;
+          if (input.startDate) filter.startDate = new Date(input.startDate);
+          if (input.endDate) filter.endDate = new Date(input.endDate);
+
+          const workouts = await this.getWorkouts(filter);
+
+          return {
+            success: true,
+            count: workouts.length,
+            workouts: workouts.map((w) => ({
+              id: w.id,
+              type: w.type,
+              duration: w.duration,
+              date: w.date instanceof Date ? w.date.toISOString() : String(w.date),
+              status: w.status,
+              description: w.description,
+            })),
+          };
+        },
+      },
+      {
+        name: 'confirm_proposal',
+        description:
+          'Confirm and save the pending workout plan that was previously presented to the user. Use this only after the user has reviewed and approved the proposed plan. Takes no arguments — it saves the plan that is already waiting.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+        actionDescription: 'Saving your workout plan...',
+        execute: async (input: CreateWorkoutInput) => {
+          const workout = await this.createWorkout(input);
+          return {
+            success: true,
+            workout: {
+              id: workout.id,
+              type: workout.type,
+              duration: workout.duration,
+              date: workout.date instanceof Date ? workout.date.toISOString() : String(workout.date),
+              description: workout.description,
+              status: workout.status,
+            },
+            message: 'Workout plan confirmed and saved.',
+          };
+        },
+      },
+    ];
   }
 
   /**

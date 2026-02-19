@@ -3,6 +3,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { z } from 'zod';
 import dotenv from 'dotenv';
 import { Memory } from '../entities/Memory';
+import { ToolProvider, ToolDefinition } from './tool-provider';
 
 dotenv.config();
 
@@ -32,7 +33,7 @@ export interface GeneratedPlan {
   explanation: string;
 }
 
-export class PlanningAgent {
+export class PlanningAgent implements ToolProvider {
   private model: any;
 
   constructor() {
@@ -41,6 +42,43 @@ export class PlanningAgent {
     }
 
     this.model = anthropic('claude-sonnet-4-20250514');
+  }
+
+  getTools(): ToolDefinition[] {
+    return [
+      {
+        name: 'create_plan',
+        description:
+          'Generate a personalized workout plan based on user goals and constraints. This does NOT save the workout — it creates a proposal that must be confirmed by the user via confirm_proposal. Use this for forward-looking requests like "plan a workout for tomorrow" or "create a strength routine for me".',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            goal: {
+              type: 'string',
+              description: "The user's goal or what they want to achieve with the workout",
+            },
+            date: {
+              type: 'string',
+              description: 'Target date in ISO format (YYYY-MM-DD). Defaults to today if not specified.',
+            },
+          },
+          required: ['goal'],
+        },
+        actionDescription: 'Creating a personalized workout plan...',
+        execute: async (input: { goal: string; date?: string; memories?: Memory[] }) => {
+          const plan = await this.generatePlan(input.goal, input.memories || [], input.date);
+          return {
+            success: true,
+            proposal: {
+              type: plan.type,
+              duration: plan.duration,
+              description: plan.description,
+              explanation: plan.explanation,
+            },
+          };
+        },
+      },
+    ];
   }
 
   /**

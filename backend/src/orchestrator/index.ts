@@ -6,6 +6,7 @@ import { planningAgent } from '../agents/planning-agent';
 import { sessionController, PendingProposal } from '../session/session-controller';
 import { WorkoutStatus } from '../entities/Workout';
 import { Memory } from '../entities/Memory';
+import { ToolProvider, ToolDefinition } from '../agents/tool-provider';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -28,8 +29,14 @@ export type EventCallback = (event: OrchestratorEvent) => void;
  * - Triggers async memory extraction
  * - Emits human-readable events via callback for SSE streaming
  */
+interface RegisteredTool {
+  definition: ToolDefinition;
+  execute: (input: any) => Promise<any>;
+}
+
 export class Orchestrator {
   private client: Anthropic;
+  private toolRegistry: Map<string, RegisteredTool>;
 
   constructor() {
     if (!process.env.ANTHROPIC_API_KEY) {
@@ -39,6 +46,8 @@ export class Orchestrator {
     this.client = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY,
     });
+
+    this.toolRegistry = this.buildToolRegistry([taskAgent, memoryAgent, planningAgent]);
   }
 
   private currentSessionId: string = ''; // Track current session for tool execution
@@ -67,20 +76,8 @@ export class Orchestrator {
    * Get a human-readable description of what a tool does (no tool names or JSON)
    */
   private describeToolAction(toolName: string): string {
-    switch (toolName) {
-      case 'get_workouts':
-        return 'Looking up your workouts...';
-      case 'create_plan':
-        return 'Creating a personalized workout plan...';
-      case 'confirm_proposal':
-        return 'Saving your workout plan...';
-      case 'update_memory':
-        return 'Updating my notes...';
-      case 'invalidate_memory':
-        return 'Updating my notes...';
-      default:
-        return 'Working on that...';
-    }
+    const tool = this.toolRegistry.get(toolName);
+    return tool?.definition.actionDescription || 'Working on that...';
   }
 
   /**
@@ -267,237 +264,133 @@ export class Orchestrator {
   }
 
   /**
-   * Get tool definitions in Anthropic format
+   * Get tool definitions in Anthropic format from the registry
    */
   private getToolDefinitions(): Anthropic.Tool[] {
-    return [
-      {
-        name: 'get_workouts',
-        description:
-          'Retrieve workouts with optional filters. Use this when the user asks about their workout history or schedule.',
-        input_schema: {
-          type: 'object',
-          properties: {
-            status: {
-              type: 'string',
-              enum: ['scheduled', 'completed', 'cancelled'],
-              description: 'Filter by workout status',
-            },
-            type: {
-              type: 'string',
-              description: 'Filter by workout type',
-            },
-            startDate: {
-              type: 'string',
-              description: 'Filter by start date (ISO format)',
-            },
-            endDate: {
-              type: 'string',
-              description: 'Filter by end date (ISO format)',
-            },
-          },
-        },
-      },
-      {
-        name: 'create_plan',
-        description:
-          'Generate a personalized workout plan based on user goals and constraints. This does NOT save the workout — it creates a proposal that must be confirmed by the user via confirm_proposal. Use this for forward-looking requests like "plan a workout for tomorrow" or "create a strength routine for me".',
-        input_schema: {
-          type: 'object',
-          properties: {
-            goal: {
-              type: 'string',
-              description: "The user's goal or what they want to achieve with the workout",
-            },
-            date: {
-              type: 'string',
-              description: 'Target date in ISO format (YYYY-MM-DD). Defaults to today if not specified.',
-            },
-          },
-          required: ['goal'],
-        },
-      },
-      {
-        name: 'confirm_proposal',
-        description:
-          'Confirm and save the pending workout plan that was previously presented to the user. Use this only after the user has reviewed and approved the proposed plan. Takes no arguments — it saves the plan that is already waiting.',
-        input_schema: {
-          type: 'object',
-          properties: {},
-        },
-      },
-      {
-        name: 'update_memory',
-        description:
-          'Update an existing memory when the user provides new information that refines or evolves a stored fact — without fully contradicting it. For example, "has a broken ankle" evolving to "has a swollen ankle", or "runs 3 times a week" changing to "runs 5 times a week". Always inform the user when you do this.',
-        input_schema: {
-          type: 'object',
-          properties: {
-            memoryId: {
-              type: 'string',
-              description: 'The ID of the memory to update (from the User Context section)',
-            },
-            newFact: {
-              type: 'string',
-              description: 'The updated fact text that replaces the old one',
-            },
-            reason: {
-              type: 'string',
-              description: 'Brief reason why this memory is being updated',
-            },
-          },
-          required: ['memoryId', 'newFact', 'reason'],
-        },
-      },
-      {
-        name: 'invalidate_memory',
-        description:
-          'Retire an outdated memory when the user indicates a previously stored fact is no longer true. For example, if the user said they had a knee injury but now says it has healed, use this tool to retire the old constraint. Always inform the user when you do this.',
-        input_schema: {
-          type: 'object',
-          properties: {
-            memoryId: {
-              type: 'string',
-              description: 'The ID of the memory to retire (from the User Context section)',
-            },
-            reason: {
-              type: 'string',
-              description: 'Brief reason why this memory is being retired',
-            },
-          },
-          required: ['memoryId', 'reason'],
-        },
-      },
-    ];
+    return Array.from(this.toolRegistry.values()).map((tool) => ({
+      name: tool.definition.name,
+      description: tool.definition.description,
+      input_schema: tool.definition.inputSchema,
+    }));
   }
 
   /**
-   * Execute a tool call
+   * Execute a tool call via registry lookup
    */
   private async executeTool(toolName: string, input: any): Promise<any> {
-    switch (toolName) {
-      case 'get_workouts':
-        const filter: any = {};
-        if (input.status) filter.status = input.status as WorkoutStatus;
-        if (input.type) filter.type = input.type;
-        if (input.startDate) filter.startDate = new Date(input.startDate);
-        if (input.endDate) filter.endDate = new Date(input.endDate);
-
-        const workouts = await taskAgent.getWorkouts(filter);
-
-        return {
-          success: true,
-          count: workouts.length,
-          workouts: workouts.map((w) => ({
-            id: w.id,
-            type: w.type,
-            duration: w.duration,
-            date: w.date.toISOString(),
-            status: w.status,
-            description: w.description,
-          })),
-        };
-
-      case 'create_plan':
-        // Generate the plan using the Planning Agent
-        const sessionMemories = sessionController.getSessionMemories(this.currentSessionId) || [];
-        const generatedPlan = await planningAgent.generatePlan(
-          input.goal,
-          sessionMemories
-        );
-
-        // Stash the proposal in session state instead of writing to DB
-        const proposalDate = input.date || new Date().toISOString().split('T')[0];
-        const proposal: PendingProposal = {
-          type: generatedPlan.type,
-          duration: generatedPlan.duration,
-          date: proposalDate,
-          description: generatedPlan.description,
-          status: WorkoutStatus.SCHEDULED,
-          explanation: generatedPlan.explanation,
-          goal: input.goal,
-        };
-
-        sessionController.setPendingProposal(this.currentSessionId, proposal);
-
-        return {
-          success: true,
-          proposal: {
-            type: proposal.type,
-            duration: proposal.duration,
-            date: proposal.date,
-            description: proposal.description,
-            explanation: proposal.explanation,
-          },
-          message: 'Plan generated. Present this to the user and wait for their confirmation before saving.',
-        };
-
-      case 'confirm_proposal':
-        const pending = sessionController.getPendingProposal(this.currentSessionId);
-
-        if (!pending) {
-          return {
-            success: false,
-            message: 'No pending proposal to confirm. Use create_plan first to generate a workout plan.',
-          };
-        }
-
-        // Write the proposal to the database via TaskAgent
-        const confirmedWorkout = await taskAgent.createWorkout({
-          type: pending.type,
-          duration: pending.duration,
-          date: new Date(pending.date),
-          description: pending.description,
-          status: pending.status,
-        });
-
-        // Clear the proposal from session state
-        sessionController.clearPendingProposal(this.currentSessionId);
-
-        return {
-          success: true,
-          workout: {
-            id: confirmedWorkout.id,
-            type: confirmedWorkout.type,
-            duration: confirmedWorkout.duration,
-            date: confirmedWorkout.date.toISOString(),
-            description: confirmedWorkout.description,
-            status: confirmedWorkout.status,
-          },
-          message: 'Workout plan confirmed and saved.',
-        };
-
-      case 'update_memory':
-        const updated = await memoryAgent.updateMemoryFact(input.memoryId, input.newFact);
-        if (updated) {
-          // Refresh session cache so subsequent messages see the updated memory
-          const refreshedAfterUpdate = await memoryAgent.getAllMemories();
-          sessionController.setSessionMemories(this.currentSessionId, refreshedAfterUpdate);
-        }
-        return {
-          success: updated,
-          message: updated
-            ? `Memory updated successfully: ${input.reason}`
-            : 'Memory not found or could not be updated',
-        };
-
-      case 'invalidate_memory':
-        const invalidated = await memoryAgent.invalidateMemory(input.memoryId);
-        if (invalidated) {
-          // Refresh session cache so the invalidated memory is removed from context
-          const refreshedAfterInvalidate = await memoryAgent.getAllMemories();
-          sessionController.setSessionMemories(this.currentSessionId, refreshedAfterInvalidate);
-        }
-        return {
-          success: invalidated,
-          message: invalidated
-            ? `Memory retired successfully: ${input.reason}`
-            : 'Memory not found or already retired',
-        };
-
-      default:
-        throw new Error(`Unknown tool: ${toolName}`);
+    const tool = this.toolRegistry.get(toolName);
+    if (!tool) {
+      throw new Error(`Unknown tool: ${toolName}`);
     }
+    return tool.execute(input);
+  }
+
+  /**
+   * Build tool registry from all agents' getTools() methods.
+   * Fails at startup if two agents register the same tool name.
+   */
+  private buildToolRegistry(providers: ToolProvider[]): Map<string, RegisteredTool> {
+    const registry = new Map<string, RegisteredTool>();
+
+    for (const provider of providers) {
+      for (const tool of provider.getTools()) {
+        if (registry.has(tool.name)) {
+          throw new Error(
+            `Tool name collision at startup: "${tool.name}" is registered by multiple agents`
+          );
+        }
+        registry.set(tool.name, { definition: tool, execute: tool.execute });
+      }
+    }
+
+    this.applyToolWrappers(registry);
+    return registry;
+  }
+
+  /**
+   * Apply orchestrator-level wrappers for tools that need session coordination.
+   * Each wrapper delegates to the agent's execute function but adds context
+   * the agent doesn't have (session state, memory cache refreshes).
+   */
+  private applyToolWrappers(registry: Map<string, RegisteredTool>): void {
+    // create_plan: inject session memories, stash proposal in session state
+    const createPlan = registry.get('create_plan')!;
+    const createPlanBase = createPlan.execute;
+    createPlan.execute = async (input: any) => {
+      const sessionMemories = sessionController.getSessionMemories(this.currentSessionId) || [];
+      const result = await createPlanBase({ ...input, memories: sessionMemories });
+
+      const proposalDate = input.date || new Date().toISOString().split('T')[0];
+      const proposal: PendingProposal = {
+        type: result.proposal.type,
+        duration: result.proposal.duration,
+        date: proposalDate,
+        description: result.proposal.description,
+        status: WorkoutStatus.SCHEDULED,
+        explanation: result.proposal.explanation,
+        goal: input.goal,
+      };
+
+      sessionController.setPendingProposal(this.currentSessionId, proposal);
+
+      return {
+        ...result,
+        proposal: {
+          ...result.proposal,
+          date: proposalDate,
+        },
+        message: 'Plan generated. Present this to the user and wait for their confirmation before saving.',
+      };
+    };
+
+    // confirm_proposal: read pending proposal from session, pass as input, clear after success
+    const confirmProposal = registry.get('confirm_proposal')!;
+    const confirmProposalBase = confirmProposal.execute;
+    confirmProposal.execute = async (_input: any) => {
+      const pending = sessionController.getPendingProposal(this.currentSessionId);
+
+      if (!pending) {
+        return {
+          success: false,
+          message: 'No pending proposal to confirm. Use create_plan first to generate a workout plan.',
+        };
+      }
+
+      const result = await confirmProposalBase({
+        type: pending.type,
+        duration: pending.duration,
+        date: new Date(pending.date),
+        description: pending.description,
+        status: pending.status,
+      });
+
+      sessionController.clearPendingProposal(this.currentSessionId);
+      return result;
+    };
+
+    // update_memory: refresh session cache after update
+    const updateMemory = registry.get('update_memory')!;
+    const updateMemoryBase = updateMemory.execute;
+    updateMemory.execute = async (input: any) => {
+      const result = await updateMemoryBase(input);
+      if (result.success) {
+        const refreshed = await memoryAgent.getAllMemories();
+        sessionController.setSessionMemories(this.currentSessionId, refreshed);
+      }
+      return result;
+    };
+
+    // invalidate_memory: refresh session cache after invalidation
+    const invalidateMemory = registry.get('invalidate_memory')!;
+    const invalidateMemoryBase = invalidateMemory.execute;
+    invalidateMemory.execute = async (input: any) => {
+      const result = await invalidateMemoryBase(input);
+      if (result.success) {
+        const refreshed = await memoryAgent.getAllMemories();
+        sessionController.setSessionMemories(this.currentSessionId, refreshed);
+      }
+      return result;
+    };
   }
 
   /**

@@ -192,6 +192,24 @@ The Orchestrator recognizes three categories of memory changes:
 
 ---
 
+## Decision 12: Dynamic Tool Registration by Agents (Enhancement)
+
+**Context:** The Orchestrator's `executeTool` function is a manual routing table that maps each tool name to the correct agent. This grows linearly with the number of tools and requires changes to the Orchestrator whenever a tool is added to any agent.
+
+**Decision:** Each agent implements a `getTools()` method that returns its tool definitions (Zod schema, description, execute function). At startup, the Orchestrator pulls tools from all agents and builds a unified registry. Adding a new tool only requires changes in the relevant agent.
+
+- **Pull model:** The Orchestrator calls `getTools()` on each agent, rather than agents pushing registrations. This keeps initialization order clear and collision detection simple.
+- **Collision detection:** If two agents register the same tool name, the system fails at startup with a clear error.
+- **`confirm_proposal` ownership:** Registered by the Task Agent, since it ultimately writes a workout. The Task Agent's execute function expects workout parameters as input (effectively an alias for `createWorkout`). The Orchestrator wraps the call — it reads `pendingProposal` from session state, passes it as the argument, and clears the proposal after a successful write. This preserves the Task Agent's purity (no session state knowledge) while keeping tool ownership logical.
+
+**Alternatives considered:**
+- *Push model (agents register themselves):* Introduces timing questions about when all agents have finished registering. Useful for plugin systems, unnecessary for a fixed set of agents.
+- *External registry/config file:* Same problem as the current switch/case — a separate file to update when tools change.
+
+**Tradeoff:** The pull model requires the Orchestrator to hold references to all agents, but it already does. The wrapping pattern for `confirm_proposal` splits coordination (Orchestrator) from execution (Task Agent), which is slightly indirect but preserves clean boundaries.
+
+---
+
 ## Appendix: Production Enhancements (Deferred)
 
 These enhancements were discussed during development and deemed valuable for production but out of scope for the prototype:
@@ -209,8 +227,6 @@ These enhancements were discussed during development and deemed valuable for pro
 6. **Embedding-based memory retrieval:** Replace LLM-based relevance scoring with vector similarity search for faster, more scalable memory retrieval.
 
 7. **Transaction handling for tool execution:** The Orchestrator's tool execution loop is not wrapped in a database transaction. If the loop calls multiple tools and one fails partway through, earlier writes are not rolled back. For the workout domain the consequence is minor (a duplicate workout at worst), but in higher-stakes domains (financial transactions, multi-step bookings), you'd want the entire tool execution sequence to be atomic — all operations succeed or all are rolled back.
-
-8. **Dynamic tool registration by agents:** Currently, the Orchestrator's `executeTool` function is a manual routing table — a switch/if-else that maps each tool name to the correct agent. This grows linearly with the number of tools. A more scalable pattern would have each agent register the tools it handles, so the Orchestrator looks up the responsible agent automatically. Adding a new tool would only require changes in the relevant agent, not in the Orchestrator.
 
 ---
 

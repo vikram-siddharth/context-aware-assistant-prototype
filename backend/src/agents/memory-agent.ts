@@ -5,6 +5,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { generateObject } from 'ai';
 import { z } from 'zod';
 import dotenv from 'dotenv';
+import { ToolProvider, ToolDefinition } from './tool-provider';
 
 dotenv.config();
 
@@ -43,7 +44,7 @@ const ExtractionSchema = z.object({
   ),
 });
 
-export class MemoryAgent {
+export class MemoryAgent implements ToolProvider {
   private memoryRepository: Repository<Memory>;
   private model: any;
 
@@ -56,6 +57,73 @@ export class MemoryAgent {
     }
 
     this.model = anthropic('claude-sonnet-4-20250514');
+  }
+
+  getTools(): ToolDefinition[] {
+    return [
+      {
+        name: 'update_memory',
+        description:
+          'Update an existing memory when the user provides new information that refines or evolves a stored fact — without fully contradicting it. For example, "has a broken ankle" evolving to "has a swollen ankle", or "runs 3 times a week" changing to "runs 5 times a week". Always inform the user when you do this.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            memoryId: {
+              type: 'string',
+              description: 'The ID of the memory to update (from the User Context section)',
+            },
+            newFact: {
+              type: 'string',
+              description: 'The updated fact text that replaces the old one',
+            },
+            reason: {
+              type: 'string',
+              description: 'Brief reason why this memory is being updated',
+            },
+          },
+          required: ['memoryId', 'newFact', 'reason'],
+        },
+        actionDescription: 'Updating my notes...',
+        execute: async (input: { memoryId: string; newFact: string; reason: string }) => {
+          const updated = await this.updateMemoryFact(input.memoryId, input.newFact);
+          return {
+            success: updated,
+            message: updated
+              ? `Memory updated successfully: ${input.reason}`
+              : 'Memory not found or could not be updated',
+          };
+        },
+      },
+      {
+        name: 'invalidate_memory',
+        description:
+          'Retire an outdated memory when the user indicates a previously stored fact is no longer true. For example, if the user said they had a knee injury but now says it has healed, use this tool to retire the old constraint. Always inform the user when you do this.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            memoryId: {
+              type: 'string',
+              description: 'The ID of the memory to retire (from the User Context section)',
+            },
+            reason: {
+              type: 'string',
+              description: 'Brief reason why this memory is being retired',
+            },
+          },
+          required: ['memoryId', 'reason'],
+        },
+        actionDescription: 'Updating my notes...',
+        execute: async (input: { memoryId: string; reason: string }) => {
+          const invalidated = await this.invalidateMemory(input.memoryId);
+          return {
+            success: invalidated,
+            message: invalidated
+              ? `Memory retired successfully: ${input.reason}`
+              : 'Memory not found or already retired',
+          };
+        },
+      },
+    ];
   }
 
   /**
