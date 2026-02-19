@@ -1,4 +1,4 @@
-import type { OrchestratorEvent } from '../types';
+import type { OrchestratorEvent, MemoryData } from '../types';
 
 export async function sendMessage(
   message: string,
@@ -47,4 +47,16 @@ export async function sendMessage(
       }
     }
   }
+}
+
+export async function fetchMemories(): Promise<MemoryData[]> {
+  const response = await fetch('/api/memories');
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to fetch memories');
+  }
+
+  const data = await response.json();
+  return data.memories;
 }

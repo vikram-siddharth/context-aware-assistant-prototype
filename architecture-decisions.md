@@ -112,9 +112,11 @@ This document captures key design decisions, tradeoffs, and reasoning as we buil
 
 3. **Inference-based updates with confirmation** — The Orchestrator may propose memory changes based on both explicit statements and reasonable inferences. For example, if a user with a stored knee injury says "I went for a 5k run last weekend," the Orchestrator should infer the injury may have healed and ask the user to confirm. The user confirmation step is the primary safeguard — it doesn't matter whether the trigger was explicit or inferred, because the user approves before any change is made.
 
-4. **User confirmation flow** — When the Orchestrator detects a potential memory change, it asks the user to confirm, phrased forward-looking (e.g., "Can I update my notes to reflect that your shoulder is no longer dislocated?"). If the user confirms, the change is made. If the user doesn't respond, the Orchestrator may proceed based on its best judgment but must inform the user of its decision.
+4. **User confirmation flow** — When the Orchestrator detects a potential memory change, it asks the user to confirm, phrased forward-looking (e.g., "Can I update my notes to reflect that your shoulder is no longer dislocated?"). If the user confirms, the change is made. If the user doesn't respond, the Orchestrator may proceed based on its best judgment but must inform the user of its decision. A structural guardrail (same pattern as Decision 11) blocks `invalidate_memory` and `update_memory` from executing in the same turn as the ask, preventing the tool from firing before the user has a chance to respond.
 
-5. **Removed `resolveConflictsAsync`/`resolveConflict`** — The fire-and-forget LLM classification is no longer needed. The Orchestrator handles everything within its normal agentic loop.
+5. **Invalidation vs. update** — If a fact evolves to a state where it no longer constrains behavior (e.g., "wound has healed"), that's an invalidation, not an update. A healed injury is not an updated injury — it's a resolved one. `update_memory` is reserved for cases where the fact still applies but the details have changed (e.g., "shoulder injury" → "shoulder is sore but improving").
+
+6. **Removed `resolveConflictsAsync`/`resolveConflict`** — The fire-and-forget LLM classification is no longer needed. The Orchestrator handles everything within its normal agentic loop.
 
 The extraction LLM's conflict detection still exists in `memory-agent.ts` but is supplementary. The Orchestrator tool is the reliable path.
 
@@ -210,6 +212,23 @@ The Orchestrator recognizes three categories of memory changes:
 
 ---
 
+## Decision 13: Memory Inspection UI (Enhancement)
+
+**Context:** Users have no way to see what the system remembers about them. Memories are only visible when the Orchestrator surfaces them in reasoning events during conversation.
+
+**Decision:** Add a read-only panel that displays all active memories with their metadata (fact, category, persistence, created date). Inactive memories are excluded — the panel answers "what does the system remember about me right now," not "what has the system ever known." No edit, delete, or deactivate controls — all memory changes are handled conversationally through the Orchestrator (invalidation via Decision 7, updates via Decision 8).
+
+- **Backend:** A single `GET /api/memories` endpoint that returns active memories. This bypasses the Orchestrator — it's direct read access to the memories table.
+- **Frontend:** A panel accessible from the chat interface (sidebar, modal, or toggle — implementation detail).
+- **No cache staleness concern:** Since the panel is read-only, it cannot put the Orchestrator's session-level memory cache (Decision 9) out of sync.
+
+**Alternatives considered:**
+- *Editable panel with deactivate/edit controls:* Creates a second path for memory changes that bypasses the Orchestrator's judgment. Introduces cache staleness (panel changes vs. Orchestrator's cached memories) and edge cases like user edits contradicting existing memories.
+
+**Tradeoff:** A read-only panel is less powerful but consistent with the system's design — the Orchestrator is the single authority for memory lifecycle decisions.
+
+---
+
 ## Appendix: Production Enhancements (Deferred)
 
 These enhancements were discussed during development and deemed valuable for production but out of scope for the prototype:
@@ -220,13 +239,11 @@ These enhancements were discussed during development and deemed valuable for pro
 
 3. **Memory confidence scoring:** Assign and display a confidence level for each extracted memory. Mentioned in the spec as extra credit.
 
-4. **Memory inspection UI:** A panel where the user can view and manage their stored memories directly.
+4. **Personality-aware reasoning tone:** Let the user choose a personality style and have the reasoning steps adapt accordingly.
 
-5. **Personality-aware reasoning tone:** Let the user choose a personality style and have the reasoning steps adapt accordingly.
+5. **Embedding-based memory retrieval:** Replace LLM-based relevance scoring with vector similarity search for faster, more scalable memory retrieval.
 
-6. **Embedding-based memory retrieval:** Replace LLM-based relevance scoring with vector similarity search for faster, more scalable memory retrieval.
-
-7. **Transaction handling for tool execution:** The Orchestrator's tool execution loop is not wrapped in a database transaction. If the loop calls multiple tools and one fails partway through, earlier writes are not rolled back. For the workout domain the consequence is minor (a duplicate workout at worst), but in higher-stakes domains (financial transactions, multi-step bookings), you'd want the entire tool execution sequence to be atomic — all operations succeed or all are rolled back.
+6. **Transaction handling for tool execution:** The Orchestrator's tool execution loop is not wrapped in a database transaction. If the loop calls multiple tools and one fails partway through, earlier writes are not rolled back. For the workout domain the consequence is minor (a duplicate workout at worst), but in higher-stakes domains (financial transactions, multi-step bookings), you'd want the entire tool execution sequence to be atomic — all operations succeed or all are rolled back.
 
 ---
 

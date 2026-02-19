@@ -41,10 +41,10 @@ Postgres (TypeORM)
 - The Planning Agent calls the LLM only for workout plan generation
 - Memory extraction is best-effort (try/catch everything) — awaited before the main LLM call so refinement signals are available
 - Memory deduplication happens during extraction — pass existing active memories to the LLM and ask it to extract only new facts
-- Memory management is orchestrator-driven — the orchestrator LLM uses `invalidate_memory` (contradictions) and `update_memory` (refinements/evolution) tools
-- Memory changes require user confirmation — the orchestrator asks conversationally before calling any memory tool
+- Memory management is orchestrator-driven — the orchestrator LLM uses `invalidate_memory` (contradictions/resolutions) and `update_memory` (refinements/evolution where the fact still matters) tools
+- Memory changes require user confirmation via two-turn flow — the LLM asks for confirmation in one turn (no tool call), and only calls the memory tool on the next turn after the user responds. A guardrail in `processMessage` blocks `update_memory`/`invalidate_memory` from executing unless a prior confirmation request was made (tracked via `pendingMemoryChanges` in session state).
 - Inference-based memory updates are allowed — if the user says something that implies a stored fact may have changed, the orchestrator asks to confirm before updating (e.g., "I ran a 10K" when a knee injury is stored → ask if it's healed)
-- Three categories of memory change: contradictions (no longer true → invalidate), refinements (more specific info → update), evolution (condition changed → update)
+- Four categories of memory change: contradictions (no longer true → invalidate), refinements (more specific info → update), evolution (condition changed but still relevant → update), resolution (fully resolved, no longer influences behavior → invalidate)
 - Memory invalidation uses soft-delete (active = false) — invalidated memories stay in the database for history
 - The Planning Agent generates plans but does not write to storage — the Orchestrator stashes plans as pending proposals in session state
 - All workout creation goes through a two-turn confirmation: `create_plan` → present to user → `confirm_proposal` (mechanical enforcement)
@@ -76,13 +76,14 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - Emits human-readable events at each stage (tool execution, final response) — does NOT list all memories at session start
 - Memories are only surfaced in thinking events when they actively influence a specific decision (e.g., "Keeping your knee injury in mind...")
 - `describeToolAction()` looks up `actionDescription` from the tool registry (no tool names or JSON exposed)
-- `buildSystemPrompt(sessionId, memories, refinements)` includes memory IDs in the user context section, instructs the LLM to manage memories via `update_memory` and `invalidate_memory`, supports inference-based updates with confirmation, includes "Session Intent vs. Durable Facts" section (preventing memory tools from being used on ephemeral requests), includes "Workout Planning Flow" instructions (two-turn confirmation), and injects pending proposal context when one exists
+- `buildSystemPrompt(sessionId, memories, refinements)` includes memory IDs in the user context section, instructs the LLM to manage memories via `update_memory` and `invalidate_memory` with four change categories (contradictions, refinements, evolution, resolution), supports inference-based updates with confirmation, includes two-turn confirmation flow for memory mutations, includes "Session Intent vs. Durable Facts" section (preventing memory tools from being used on ephemeral requests), includes "Workout Planning Flow" instructions (two-turn confirmation), and injects pending proposal context when one exists
 - Extraction is awaited (not fire-and-forget) so refinement signals are available before the main LLM call
-- When extraction detects refinements, the Orchestrator auto-applies them via `memoryAgent.updateMemoryFact()` (the user's explicit words are the confirmation), refreshes the session cache, and tells the LLM what was updated so it can acknowledge naturally
+- When extraction detects refinements, they are NOT auto-applied — they are passed to the LLM via a "Detected Memory Changes" section in the system prompt, so the LLM can handle them through the two-turn confirmation flow (ask user → wait → call update_memory or invalidate_memory)
 - 400ms delay between rapid events so the UI can render them; final result event has no delay
 - `create_plan` wrapper (in `applyToolWrappers`) injects session memories, calls Planning Agent, stashes the generated plan as a `PendingProposal` in session state (does NOT write to DB), and returns plan details + message telling the LLM to present and wait
 - `confirm_proposal` wrapper reads the pending proposal from session state, passes it to Task Agent's execute function, writes it to DB, and clears the proposal
 - Guardrail: `toolsCalledThisTurn` Set tracks tool names per `processMessage()` call; blocks `confirm_proposal` if `create_plan` was already called in the same turn
+- Guardrail: `pendingMemoryChanges` in session state enforces confirmation for memory mutations — `update_memory`/`invalidate_memory` are blocked unless the session has a pending memory change flag. Two arming paths: (1) **extraction path** — flag pre-armed when extraction detects refinements, allowing the tool on the next turn after user confirms; (2) **inference path** — flag set when the guardrail blocks a tool call, error message tells the LLM to retry immediately if the user already confirmed (block-then-retry within the same agentic loop). Flag is cleared when the tool successfully executes.
 - System prompt includes "Session Intent vs. Durable Facts" section with linguistic test (conditional mood = session intent, indicative mood = durable fact)
 - System prompt includes "Workout Planning Flow" section describing the two-turn confirmation flow (create_plan → confirm_proposal)
 - System prompt includes "Pending Workout Proposal" section (conditional) when a proposal exists, with instructions for confirm/modify/reject
@@ -90,10 +91,10 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 ### Session Controller
 - In-memory Map storing conversation history by session ID
 - Uses AI SDK's CoreMessage type for message format compatibility
-- Three Maps: `sessions` (conversation history), `sessionMemories` (cached memories), `pendingProposals` (pending workout proposals)
+- Three Maps + one Set: `sessions` (conversation history), `sessionMemories` (cached memories), `pendingProposals` (pending workout proposals), `pendingMemoryChanges` (sessions awaiting memory change confirmation)
 - Exports `PendingProposal` type: `{ type, duration, date (ISO string), description, status, explanation, goal }`
-- Methods: addMessage, getHistory, setSessionMemories, getSessionMemories, hasLoadedMemories, clearSession, getActiveSessions, hasSession, setPendingProposal, getPendingProposal, clearPendingProposal, hasPendingProposal
-- `clearSession()` clears all three Maps for the session
+- Methods: addMessage, getHistory, setSessionMemories, getSessionMemories, hasLoadedMemories, clearSession, getActiveSessions, hasSession, setPendingProposal, getPendingProposal, clearPendingProposal, hasPendingProposal, setPendingMemoryChange, hasPendingMemoryChange, clearPendingMemoryChange
+- `clearSession()` clears all three Maps and the Set for the session
 
 ### Memory Agent
 - Implements `ToolProvider` — owns `update_memory` and `invalidate_memory` tools

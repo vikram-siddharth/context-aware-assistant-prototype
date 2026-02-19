@@ -3,6 +3,14 @@ export type OrchestratorEvent = {
   content: string;
 };
 
+export type MemoryData = {
+  id: string;
+  fact: string;
+  category: 'constraint' | 'preference' | 'goal';
+  persistence: 'permanent' | 'long_term' | 'short_term';
+  created_at: string;
+};
+
 export type ReasoningStepData = {
   type: 'thinking' | 'action';
   content: string;

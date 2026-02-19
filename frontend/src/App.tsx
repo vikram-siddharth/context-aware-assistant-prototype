@@ -4,12 +4,14 @@ import { sendMessage } from './api/chat';
 import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
 import SessionControls from './components/SessionControls';
+import MemoryModal from './components/MemoryModal';
 import './App.css';
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [pendingReasoning, setPendingReasoning] = useState<ReasoningStepData[]>([]);
+  const [memoryModalOpen, setMemoryModalOpen] = useState(false);
   const sessionIdRef = useRef(crypto.randomUUID());
 
   const handleSend = useCallback(async (text: string) => {
@@ -59,7 +61,11 @@ function App() {
     <div className="app">
       <header className="app__header">
         <h1>Your Personal Workout Planning Assistant</h1>
-        <SessionControls onNewChat={handleNewChat} disabled={isStreaming} />
+        <SessionControls
+          onNewChat={handleNewChat}
+          onOpenMemories={() => setMemoryModalOpen(true)}
+          disabled={isStreaming}
+        />
       </header>
       <main className="app__main">
         <ChatWindow
@@ -69,6 +75,7 @@ function App() {
         />
         <MessageInput onSend={handleSend} disabled={isStreaming} />
       </main>
+      <MemoryModal open={memoryModalOpen} onClose={() => setMemoryModalOpen(false)} />
     </div>
   );
 }

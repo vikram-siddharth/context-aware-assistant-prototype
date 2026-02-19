@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { AppDataSource } from './database/data-source';
 import workoutRoutes from './routes/workout-routes';
 import chatRoutes from './routes/chat-routes';
+import memoryRoutes from './routes/memory-routes';
 
 // Load environment variables
 dotenv.config();
@@ -17,6 +18,7 @@ app.use(express.json());
 // API Routes
 app.use('/api/workouts', workoutRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/memories', memoryRoutes);
 
 // Routes
 app.get('/', (req: Request, res: Response) => {

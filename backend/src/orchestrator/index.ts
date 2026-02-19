@@ -125,30 +125,22 @@ export class Orchestrator {
       console.log(`[Orchestrator] Added ${extractionResult.newMemories.length} new memories to session cache`);
     }
 
-    // Auto-apply refinements detected by extraction.
-    // The user explicitly provided more specific info — their own words are the confirmation.
-    const appliedRefinements: MemoryRefinement[] = [];
-    if (extractionResult.refinements.length > 0) {
-      for (const ref of extractionResult.refinements) {
-        const updated = await memoryAgent.updateMemoryFact(ref.existingMemoryId, ref.suggestedUpdate);
-        if (updated) {
-          appliedRefinements.push(ref);
-          console.log(`[Orchestrator] Auto-applied refinement: "${ref.existingFact}" → "${ref.suggestedUpdate}"`);
-        }
-      }
+    // Refinements detected by extraction are NOT auto-applied.
+    // They are passed to the LLM as signals so it can handle them through
+    // the two-turn confirmation flow (ask user → wait → call tool).
+    const detectedRefinements = extractionResult.refinements;
+    if (detectedRefinements.length > 0) {
+      console.log(`[Orchestrator] Detected ${detectedRefinements.length} refinement(s) — passing to LLM for confirmation`);
 
-      if (appliedRefinements.length > 0) {
-        await this.emit(onEvent, { type: 'action', content: 'Updating my notes...' });
-
-        // Refresh session cache so the system prompt and future messages see updated facts
-        const refreshed = await memoryAgent.getAllMemories();
-        sessionController.setSessionMemories(sessionId, refreshed);
-        memories = refreshed;
-      }
+      // Pre-arm the memory confirmation flag. The LLM will ask the user to
+      // confirm (no tool call this turn). On the next turn, when the user
+      // confirms and the LLM calls update_memory/invalidate_memory, the
+      // guardrail sees the flag and allows execution.
+      sessionController.setPendingMemoryChange(sessionId);
     }
 
-    // Step 2: Build system prompt with memory context + applied refinement notifications
-    const systemPrompt = this.buildSystemPrompt(sessionId, memories, appliedRefinements);
+    // Step 2: Build system prompt with memory context + detected refinement signals
+    const systemPrompt = this.buildSystemPrompt(sessionId, memories, detectedRefinements);
 
     // Step 3: Convert conversation history to Anthropic format
     const messages: Anthropic.MessageParam[] = [
@@ -201,6 +193,31 @@ export class Orchestrator {
               }),
             });
             continue;
+          }
+
+          // Guardrail: block memory mutation tools unless user confirmation was received in a prior turn.
+          // Sets the flag on block so the tool can succeed on retry — either within the
+          // same agentic loop (inference path) or on the next processMessage call (extraction path).
+          if (
+            (toolCall.name === 'update_memory' || toolCall.name === 'invalidate_memory') &&
+            !sessionController.hasPendingMemoryChange(this.currentSessionId)
+          ) {
+            console.log(`[Orchestrator] Guardrail: Blocked ${toolCall.name} — user confirmation required first`);
+            sessionController.setPendingMemoryChange(this.currentSessionId);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: toolCall.id,
+              content: JSON.stringify({
+                success: false,
+                message: 'This tool was blocked because no prior confirmation was registered. Check the conversation: if the user has already confirmed this change in their most recent message, you may call this tool again immediately. If the user has not yet confirmed, ask them first and do not call this tool until they respond.',
+              }),
+            });
+            continue;
+          }
+
+          // Clear pending memory change flag when a memory tool actually executes
+          if (toolCall.name === 'update_memory' || toolCall.name === 'invalidate_memory') {
+            sessionController.clearPendingMemoryChange(this.currentSessionId);
           }
 
           console.log(`[Orchestrator] Executing tool: ${toolCall.name}`);
@@ -496,41 +513,73 @@ Action: Confirm, then use update_memory with the more precise version.
 Example: You know "has a broken ankle" but the user says "my ankle is mostly healed, just a bit stiff."
 Action: Confirm, then use update_memory to reflect the current state.
 
+**Resolution** — a constraint, preference, or goal has been fully resolved and no longer influences future behavior.
+Example: You know "has a knee injury" but the user says "my knee has fully healed." A healed injury is not an updated injury — it is a resolved one. There is no meaningful constraint left to track.
+Action: Confirm, then use invalidate_memory (NOT update_memory).
+
+**Key distinction for evolution vs. resolution**: If the evolved state still represents a constraint, preference, or goal that should influence future planning, use update_memory. If the evolved state means the fact no longer needs to influence behavior at all, use invalidate_memory. "Shoulder is sore but improving" still constrains planning → update_memory. "Wound has fully healed" no longer constrains anything → invalidate_memory.
+
 ### Inference-Based Updates
 - You may infer that a stored fact has changed based on reasonable evidence, not just explicit statements.
-- If the user says something that implies a stored fact may no longer be accurate (e.g., "I went for a 10K run" when you know they have a knee injury), treat it as a signal worth checking — not as proof.
-- When you notice an implication like this, ask the user conversationally to confirm. For example: "Nice — a 10K! Last I knew your knee was giving you trouble. Has that cleared up?"
+- If the user says something that implies a stored fact may no longer be accurate, treat it as a signal worth checking — not as proof.
+- Distinguish between levels of incompatibility:
+
+  **Physically incompatible** — the activity is impossible if the stored fact is still true.
+  Example: "I went running yesterday" when you know "has a broken ankle." You cannot run on a broken ankle. This strongly implies the constraint is resolved.
+  Action: Your default assumption should be **resolution** (invalidate_memory), not evolution (update_memory). Do NOT hedge by softening the constraint into a weaker version (e.g., "ankle is recovering") — if the user ran on it, it's not broken anymore. Ask the user whether the constraint is still a factor at all, giving them a clear path to either outcome. For example: "Nice — a run! That sounds like your ankle has healed. Should I stop keeping that in mind as a limitation, or is it still something I should factor into your workouts?"
+  - If the user says it's resolved ("yeah it's fine now") → use invalidate_memory
+  - If the user says it's still a factor ("it's better but still not 100%") → use update_memory with the user's own description of the current state, not your guess
+
+  **Inadvisable but possible** — the activity is risky given the stored fact but not impossible.
+  Example: "I went for a light jog" when you know "has a knee injury." Jogging with a knee injury is possible but not recommended.
+  Action: Ask conversationally whether the condition has changed. For example: "Nice — how's the knee holding up? Last I knew it was giving you trouble."
+
+  **Compatible** — the activity does not conflict with the stored fact at all.
+  Example: "I did some yoga" when you know "has a strength-training goal." These are compatible.
+  Action: Do nothing — no need to ask about the memory.
+
+- The key test: **could the user physically do this if the stored fact were still true?** If no, the fact has almost certainly been resolved — default to proposing invalidation, not a softened update. If yes but risky, ask about it. If yes and harmless, ignore it.
 - Do NOT silently update or retire a memory based on inference. Always confirm first.
-- Use good judgment about what counts as a reasonable inference. "I went for a run" with a stored knee injury is worth asking about. "I did some yoga" with a strength-training goal is not — those are compatible.
+- When proposing a memory change from inference, ask the user whether the constraint still applies at all. Let the user tell you the current state — do not invent a hedged version of the constraint on their behalf.
 
 ### Confirmation Before Acting
-- Before calling update_memory or invalidate_memory, **always ask the user to confirm first**.
+- Before calling update_memory or invalidate_memory, **always ask the user to confirm first in a separate response**.
+- **CRITICAL: Do NOT call update_memory or invalidate_memory in the same response where you ask for confirmation.** Ask the question first, wait for the user's reply, and only call the tool on the next turn if they agree. This is a two-turn flow — just like workout creation:
+  1. You ask the user to confirm the memory change — no tool call in this turn
+  2. If the user confirms, you call the memory tool on the next turn
+  3. If the user declines, you do not make any change
 - **IMPORTANT: Never contradict what the user just said.** When the user tells you something new, acknowledge it and propose the update forward-looking. Do NOT restate the old fact as if it's still current.
   - BAD: "I have it noted that your shoulder is dislocated. Should I update that?" (restates old fact, ignores what the user just said)
   - GOOD: "Got it — sounds like your shoulder has improved. Want me to update what I have on file so I keep that in mind going forward?" (acknowledges the new info, proposes the change naturally)
   - BAD: "You mentioned you prefer mornings — are you switching to evenings?" (frames the old fact as current)
   - GOOD: "Sounds like you've moved to evening workouts — should I remember that going forward?" (leads with the new info)
-- If the user confirms the change, proceed with the appropriate tool call.
-- If the user does not respond to your question and moves on to a different topic, you may proceed with the change, but briefly mention what you did (e.g., "By the way, I've noted that your shoulder is feeling better now — let me know if that's not right.").
+- If the user confirms the change, proceed with the appropriate tool call on that turn.
+- If the user does not respond to your question and moves on to a different topic, you may proceed with the change on the next turn, but briefly mention what you did (e.g., "By the way, I've noted that your shoulder is feeling better now — let me know if that's not right.").
 
 ### Choosing the Right Tool
-- **update_memory**: Use for refinements and evolution — the fact is being updated, not erased.
-- **invalidate_memory**: Use for contradictions — the fact is no longer true at all and should be retired.
+- **update_memory**: Use for refinements and evolution where the fact still influences future behavior — the details changed but the fact still matters (e.g., "shoulder injury" → "shoulder is sore but improving").
+- **invalidate_memory**: Use for contradictions AND resolutions — the fact is either no longer true or has been fully resolved and no longer needs to influence behavior (e.g., injury fully healed, goal achieved, preference abandoned).
 
 Use the memory ID from the User Context section above.
 `;
     }
 
-    // Notify the LLM about refinements that were already applied
+    // Pass detected refinements to the LLM as signals that need confirmation
     if (refinements.length > 0) {
-      systemPrompt += '\n## Recently Updated Memories\n';
-      systemPrompt += 'Based on what the user just said, the following memories were automatically updated with more specific information:\n\n';
+      systemPrompt += '\n## Detected Memory Changes\n';
+      systemPrompt += 'Based on what the user just said, the following existing memories may need to be updated or retired. These changes have NOT been applied yet — you must handle them through the confirmation flow.\n\n';
 
       for (const ref of refinements) {
-        systemPrompt += `- "${ref.existingFact}" → "${ref.suggestedUpdate}" (${ref.reason})\n`;
+        systemPrompt += `- Memory ID: ${ref.existingMemoryId} — current: "${ref.existingFact}" → detected: "${ref.suggestedUpdate}" (${ref.reason})\n`;
       }
 
-      systemPrompt += '\nBriefly and naturally acknowledge these updates in your response — for example, "Got it, I\'ll keep in mind that your shoulder is dislocated" — woven into whatever else you\'re saying. Do not use technical language like "updated my records" or "noted in the system."\n';
+      systemPrompt += `
+Evaluate each detected change:
+- If the updated fact still represents a relevant constraint, preference, or goal → ask the user to confirm, then use update_memory on the next turn
+- If the updated fact means the original is fully resolved and no longer relevant → ask the user to confirm, then use invalidate_memory on the next turn
+- Follow the two-turn confirmation flow: ask first (no tool call), act after the user responds
+- Weave the confirmation naturally into your response — e.g., "Got it — sounds like your shoulder has improved. Want me to update what I have on file?"
+`;
     }
 
     // Add pending proposal context if one exists

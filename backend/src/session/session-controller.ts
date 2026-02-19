@@ -20,11 +20,13 @@ export class SessionController {
   private sessions: Map<string, CoreMessage[]>;
   private sessionMemories: Map<string, Memory[]>;
   private pendingProposals: Map<string, PendingProposal>;
+  private pendingMemoryChanges: Set<string>;
 
   constructor() {
     this.sessions = new Map();
     this.sessionMemories = new Map();
     this.pendingProposals = new Map();
+    this.pendingMemoryChanges = new Set();
   }
 
   /**
@@ -75,6 +77,7 @@ export class SessionController {
     this.sessions.delete(sessionId);
     this.sessionMemories.delete(sessionId);
     this.pendingProposals.delete(sessionId);
+    this.pendingMemoryChanges.delete(sessionId);
   }
 
   /**
@@ -118,6 +121,28 @@ export class SessionController {
    */
   hasPendingProposal(sessionId: string): boolean {
     return this.pendingProposals.has(sessionId);
+  }
+
+  /**
+   * Mark that the LLM has asked the user to confirm a memory change.
+   * The memory tool is blocked until this flag is set.
+   */
+  setPendingMemoryChange(sessionId: string): void {
+    this.pendingMemoryChanges.add(sessionId);
+  }
+
+  /**
+   * Check if the LLM has previously asked for memory change confirmation.
+   */
+  hasPendingMemoryChange(sessionId: string): boolean {
+    return this.pendingMemoryChanges.has(sessionId);
+  }
+
+  /**
+   * Clear the pending memory change flag after the tool executes.
+   */
+  clearPendingMemoryChange(sessionId: string): void {
+    this.pendingMemoryChanges.delete(sessionId);
   }
 }
 
