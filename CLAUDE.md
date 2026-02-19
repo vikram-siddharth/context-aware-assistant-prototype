@@ -59,7 +59,7 @@ Postgres (TypeORM)
 id, type, duration, date, description (nullable), status (scheduled/completed/cancelled), created_at, updated_at
 
 ### Memory (persistent memory)
-id, fact, category (constraint/preference/goal), persistence (permanent/long_term/short_term), active (boolean, default true), created_at
+id, fact, category (constraint/preference/goal), persistence (permanent/long_term/short_term), active (boolean, default true), estimated_expiry (date, nullable, default null), created_at
 
 ## Implementation Notes
 
@@ -171,3 +171,4 @@ Integration test (`test-orchestrator.ts`) validates:
 - [x] User confirmation for domain actions (Decision 11: two-turn plan→confirm flow, guardrail, pending proposals in session state)
 - [x] Dynamic tool registration (Decision 12: ToolProvider interface, registry with collision detection, orchestrator wrappers)
 - [x] Session intent vs. durable facts filtering (linguistic test in Memory Agent extraction prompt and Orchestrator system prompt)
+- [x] Memory expiry column (estimated_expiry: nullable date, defaults to null — Orchestrator will fill conversationally in piece 2)

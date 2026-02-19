@@ -40,6 +40,9 @@ export class Memory {
   @Column({ type: 'boolean', default: true })
   active: boolean;
 
+  @Column({ type: 'date', nullable: true, default: null })
+  estimated_expiry: Date | null;
+
   @CreateDateColumn()
   created_at: Date;
 }
