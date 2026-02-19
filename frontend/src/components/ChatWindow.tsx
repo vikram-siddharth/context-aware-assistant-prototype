@@ -17,12 +17,6 @@ export default function ChatWindow({ messages, pendingReasoning, isStreaming }: 
 
   return (
     <div className="chat-window">
-      {messages.length === 0 && !isStreaming && (
-        <div className="chat-window__empty">
-          Send a message to start a conversation.
-        </div>
-      )}
-
       {messages.map((msg, i) => (
         <div key={i} className={`chat-message chat-message--${msg.role}`}>
           <div className="chat-message__label">

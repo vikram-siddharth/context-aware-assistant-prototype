@@ -22,7 +22,7 @@ export default function MessageInput({ onSend, disabled }: Props) {
         type="text"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder={disabled ? 'Waiting for response...' : 'Type a message...'}
+        placeholder={disabled ? 'Waiting for response...' : 'Tell me how I can help you plan a workout'}
         disabled={disabled}
         autoFocus
       />

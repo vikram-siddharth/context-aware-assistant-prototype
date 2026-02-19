@@ -58,7 +58,7 @@ function App() {
   return (
     <div className="app">
       <header className="app__header">
-        <h1>Context Aware Assistant</h1>
+        <h1>Your Personal Workout Planning Assistant</h1>
         <SessionControls onNewChat={handleNewChat} disabled={isStreaming} />
       </header>
       <main className="app__main">
