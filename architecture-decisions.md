@@ -163,6 +163,35 @@ The Orchestrator recognizes three categories of memory changes:
 
 ---
 
+## Decision 11: User Confirmation for Domain Actions (Enhancement)
+
+**Context:** Two problems with the current plan-and-execute flow:
+
+1. **UX:** The Task Agent writes to Postgres before the user has seen the plan. The reasoning stream shows "Creating your plan..." before the assistant describes it.
+2. **Data fidelity:** The Planning Agent generates detailed plans that accommodate constraints (e.g., "backstroke focus, low kick intensity to protect knee"), but the Orchestrator LLM re-interprets those details when calling `create_workout` and may drop specifics. The stored workout becomes a lossy summary of what was actually planned.
+
+**Decision:** Split plan-and-execute into two turns with a new `confirm_proposal` tool.
+
+- `create_plan` executes as before, but the Orchestrator stashes the structured output in session state as `pendingProposal` instead of immediately writing. The Planning Agent's output matches `create_workout`'s parameter shape so it can flow directly to the Task Agent without LLM re-interpretation.
+- The LLM presents the plan and asks for confirmation.
+- On the next turn, if the user approves, the LLM calls `confirm_proposal` (no arguments). The Orchestrator passes the stashed plan directly to the Task Agent — the LLM never specifies workout parameters on the confirmation turn.
+- If the user requests changes, `create_plan` runs again and replaces the pending proposal. If the user changes topic, the proposal is abandoned.
+- A guardrail in `executeTool` blocks `create_workout` from executing in the same turn as `create_plan`, catching cases where the LLM ignores the system prompt.
+
+**Scope:** All domain writes (creates, updates, deletes) require user confirmation. Reads (`get_workouts`) do not. All workout creation goes through `create_plan` → `confirm_proposal`. `create_workout` is no longer a tool the LLM can call directly — it is only called internally by `confirm_proposal`.
+
+**Pending proposal storage:** Session state (in-memory, alongside conversation history). Same lifecycle as ephemeral state — cleared on New Chat. This is correct because workout plans are designed within a single session.
+
+**Unlike memory invalidation (Decision 7), domain actions are never written without confirmation.** A missed memory update is low-cost and recoverable. An unwanted workout record is visible in the UI and harder to undo.
+
+**Alternatives considered:**
+- *Postgres with `pending` status:* Write immediately, flip to `scheduled` on confirmation. Introduces write-before-approval, which is the problem we're solving.
+- *Serialize the plan in conversation history:* Round-tripping structured data through natural language risks the same lossy re-interpretation.
+
+**Tradeoff:** The two-turn flow adds a round trip to every planning interaction, but workout planning is inherently conversational — the user benefits from reviewing the plan.
+
+---
+
 ## Appendix: Production Enhancements (Deferred)
 
 These enhancements were discussed during development and deemed valuable for production but out of scope for the prototype:
@@ -179,11 +208,9 @@ These enhancements were discussed during development and deemed valuable for pro
 
 6. **Embedding-based memory retrieval:** Replace LLM-based relevance scoring with vector similarity search for faster, more scalable memory retrieval.
 
-7. **User confirmation for domain actions:** Currently, the Planning Agent designs a workout and the Task Agent writes it to the database without user approval. In higher-stakes domains (financial transactions, medical recommendations, bookings), you'd want a confirmation step between planning and execution — the same pattern we built for memory invalidation. The Orchestrator would present the proposed action, wait for user approval, and only then delegate to the Task Agent. For the workout domain this is low-risk, but the architecture should support it.
+7. **Transaction handling for tool execution:** The Orchestrator's tool execution loop is not wrapped in a database transaction. If the loop calls multiple tools and one fails partway through, earlier writes are not rolled back. For the workout domain the consequence is minor (a duplicate workout at worst), but in higher-stakes domains (financial transactions, multi-step bookings), you'd want the entire tool execution sequence to be atomic — all operations succeed or all are rolled back.
 
-8. **Transaction handling for tool execution:** The Orchestrator's tool execution loop is not wrapped in a database transaction. If the loop calls multiple tools and one fails partway through, earlier writes are not rolled back. For the workout domain the consequence is minor (a duplicate workout at worst), but in higher-stakes domains (financial transactions, multi-step bookings), you'd want the entire tool execution sequence to be atomic — all operations succeed or all are rolled back.
-
-9. **Dynamic tool registration by agents:** Currently, the Orchestrator's `executeTool` function is a manual routing table — a switch/if-else that maps each tool name to the correct agent. This grows linearly with the number of tools. A more scalable pattern would have each agent register the tools it handles, so the Orchestrator looks up the responsible agent automatically. Adding a new tool would only require changes in the relevant agent, not in the Orchestrator.
+8. **Dynamic tool registration by agents:** Currently, the Orchestrator's `executeTool` function is a manual routing table — a switch/if-else that maps each tool name to the correct agent. This grows linearly with the number of tools. A more scalable pattern would have each agent register the tools it handles, so the Orchestrator looks up the responsible agent automatically. Adding a new tool would only require changes in the relevant agent, not in the Orchestrator.
 
 ---
 

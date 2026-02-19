@@ -46,7 +46,10 @@ Postgres (TypeORM)
 - Inference-based memory updates are allowed — if the user says something that implies a stored fact may have changed, the orchestrator asks to confirm before updating (e.g., "I ran a 10K" when a knee injury is stored → ask if it's healed)
 - Three categories of memory change: contradictions (no longer true → invalidate), refinements (more specific info → update), evolution (condition changed → update)
 - Memory invalidation uses soft-delete (active = false) — invalidated memories stay in the database for history
-- The Planning Agent generates plans but does not write to storage — the Orchestrator saves plans via the Task Agent
+- The Planning Agent generates plans but does not write to storage — the Orchestrator stashes plans as pending proposals in session state
+- All workout creation goes through a two-turn confirmation: `create_plan` → present to user → `confirm_proposal` (mechanical enforcement)
+- `create_workout` is internal-only — called by `confirm_proposal` to write to DB, never exposed to the LLM as a callable tool
+- A guardrail in `processMessage` blocks `confirm_proposal` in the same turn as `create_plan`
 - The UI must never show tool names, raw JSON, SQL, embeddings, or prompt scaffolding
 
 ## Database Schema
@@ -62,22 +65,30 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - Uses Anthropic SDK directly (@anthropic-ai/sdk) for full control over tool definitions
 - Implements agentic loop to handle multi-step tool usage (max 5 iterations)
 - Tool definitions use proper Anthropic `input_schema` format with explicit `type: 'object'`
-- Tools: `create_workout`, `get_workouts`, `create_plan`, `update_memory`, `invalidate_memory`
+- LLM-callable tools: `get_workouts`, `create_plan`, `confirm_proposal`, `update_memory`, `invalidate_memory`
 - `processMessage()` returns `{ response: string }`
 - Accepts optional `onEvent` callback (`EventCallback`) for SSE streaming
 - Exports `OrchestratorEvent` type: `{ type: 'thinking' | 'action' | 'result' | 'error', content: string }`
 - Emits human-readable events at each stage (tool execution, final response) — does NOT list all memories at session start
 - Memories are only surfaced in thinking events when they actively influence a specific decision (e.g., "Keeping your knee injury in mind...")
 - `describeToolAction()` maps tool names to user-friendly descriptions (no tool names or JSON exposed)
-- `buildSystemPrompt()` includes memory IDs in the user context section, instructs the LLM to manage memories via `update_memory` and `invalidate_memory`, and supports inference-based updates with confirmation
+- `buildSystemPrompt(sessionId, memories, refinements)` includes memory IDs in the user context section, instructs the LLM to manage memories via `update_memory` and `invalidate_memory`, supports inference-based updates with confirmation, includes "Workout Planning Flow" instructions (two-turn confirmation), and injects pending proposal context when one exists
 - Extraction is awaited (not fire-and-forget) so refinement signals are available before the main LLM call
 - When extraction detects refinements, the Orchestrator auto-applies them via `memoryAgent.updateMemoryFact()` (the user's explicit words are the confirmation), refreshes the session cache, and tells the LLM what was updated so it can acknowledge naturally
 - 400ms delay between rapid events so the UI can render them; final result event has no delay
+- `create_plan` execution stashes the generated plan as a `PendingProposal` in session state (does NOT write to DB) and returns plan details + message telling the LLM to present and wait
+- `confirm_proposal` execution reads the pending proposal from session state, writes it to DB via `taskAgent.createWorkout()`, and clears the proposal
+- Guardrail: `toolsCalledThisTurn` Set tracks tool names per `processMessage()` call; blocks `confirm_proposal` if `create_plan` was already called in the same turn
+- System prompt includes "Workout Planning Flow" section describing the two-turn confirmation flow (create_plan → confirm_proposal)
+- System prompt includes "Pending Workout Proposal" section (conditional) when a proposal exists, with instructions for confirm/modify/reject
 
 ### Session Controller
 - In-memory Map storing conversation history by session ID
 - Uses AI SDK's CoreMessage type for message format compatibility
-- Methods: addMessage, getHistory, clearSession, getActiveSessions, hasSession
+- Three Maps: `sessions` (conversation history), `sessionMemories` (cached memories), `pendingProposals` (pending workout proposals)
+- Exports `PendingProposal` type: `{ type, duration, date (ISO string), description, status, explanation, goal }`
+- Methods: addMessage, getHistory, setSessionMemories, getSessionMemories, hasLoadedMemories, clearSession, getActiveSessions, hasSession, setPendingProposal, getPendingProposal, clearPendingProposal, hasPendingProposal
+- `clearSession()` clears all three Maps for the session
 
 ### Memory Agent
 - Extraction is best-effort, never throws errors — returns `ExtractionResult { newMemories, refinements }`
@@ -98,7 +109,7 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - Specialized system prompt focused on workout planning and constraint awareness
 - Groups memories by category in prompt (CONSTRAINTS, Goals, Preferences)
 - Emphasizes respecting physical constraints and explaining alternatives
-- Does NOT write to database — Orchestrator saves generated plans via Task Agent
+- Does NOT write to database — Orchestrator stashes generated plans as pending proposals in session state
 
 ### Chat Routes
 - POST /api/chat - SSE streaming endpoint (accepts message + sessionId in JSON body, streams OrchestratorEvents)
@@ -117,7 +128,7 @@ Integration test (`test-orchestrator.ts`) validates:
 - ✅ Memory persistence in PostgreSQL
 - ✅ Cross-session memory retrieval (different session IDs)
 - ✅ Constraint enforcement (knee injury mentioned in responses)
-- ✅ Tool execution (create_workout, get_workouts, create_plan)
+- ✅ Tool execution (get_workouts, create_plan, confirm_proposal)
 - ✅ Agentic loop handling (multi-step tool usage)
 
 **Test scenario:**
@@ -139,7 +150,7 @@ Integration test (`test-orchestrator.ts`) validates:
 - [x] Task Agent with CRUD operations
 - [x] REST endpoints for testing
 - [x] Memory Agent (extraction + retrieval)
-- [x] Orchestrator with tool definitions (create_workout, get_workouts, create_plan, invalidate_memory)
+- [x] Orchestrator with tool definitions (get_workouts, create_plan, confirm_proposal, update_memory, invalidate_memory)
 - [x] Planning Agent (LLM-powered with constraint awareness and explanations)
 - [x] Session Controller (in-memory conversation history per session)
 - [x] Chat routes (POST /api/chat, session management)
@@ -148,3 +159,4 @@ Integration test (`test-orchestrator.ts`) validates:
 - [x] SSE test script (test-sse.ts — boots server, sends two requests, logs streamed events)
 - [x] Memory invalidation (orchestrator-driven via `invalidate_memory` tool, soft-delete with active flag)
 - [x] React frontend with chat UI
+- [x] User confirmation for domain actions (Decision 11: two-turn plan→confirm flow, guardrail, pending proposals in session state)

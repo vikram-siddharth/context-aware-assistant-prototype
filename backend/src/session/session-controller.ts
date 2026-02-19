@@ -1,5 +1,16 @@
 import { CoreMessage } from 'ai';
 import { Memory } from '../entities/Memory';
+import { WorkoutStatus } from '../entities/Workout';
+
+export interface PendingProposal {
+  type: string;
+  duration: number;
+  date: string;           // ISO YYYY-MM-DD, converted to Date at execution time
+  description: string;
+  status: WorkoutStatus;
+  explanation: string;    // user-facing reasoning from PlanningAgent
+  goal: string;           // original user goal, preserved for re-planning
+}
 
 /**
  * Session Controller
@@ -8,10 +19,12 @@ import { Memory } from '../entities/Memory';
 export class SessionController {
   private sessions: Map<string, CoreMessage[]>;
   private sessionMemories: Map<string, Memory[]>;
+  private pendingProposals: Map<string, PendingProposal>;
 
   constructor() {
     this.sessions = new Map();
     this.sessionMemories = new Map();
+    this.pendingProposals = new Map();
   }
 
   /**
@@ -61,6 +74,7 @@ export class SessionController {
   clearSession(sessionId: string): void {
     this.sessions.delete(sessionId);
     this.sessionMemories.delete(sessionId);
+    this.pendingProposals.delete(sessionId);
   }
 
   /**
@@ -75,6 +89,35 @@ export class SessionController {
    */
   hasSession(sessionId: string): boolean {
     return this.sessions.has(sessionId);
+  }
+
+  /**
+   * Store a pending proposal for a session.
+   * Only one proposal can be pending at a time — setting a new one overwrites the old.
+   */
+  setPendingProposal(sessionId: string, proposal: PendingProposal): void {
+    this.pendingProposals.set(sessionId, proposal);
+  }
+
+  /**
+   * Get the pending proposal for a session, or null if none exists.
+   */
+  getPendingProposal(sessionId: string): PendingProposal | null {
+    return this.pendingProposals.get(sessionId) ?? null;
+  }
+
+  /**
+   * Clear the pending proposal for a session.
+   */
+  clearPendingProposal(sessionId: string): void {
+    this.pendingProposals.delete(sessionId);
+  }
+
+  /**
+   * Check if a session has a pending proposal.
+   */
+  hasPendingProposal(sessionId: string): boolean {
+    return this.pendingProposals.has(sessionId);
   }
 }
 

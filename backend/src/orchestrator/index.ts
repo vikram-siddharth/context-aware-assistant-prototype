@@ -3,7 +3,7 @@ import { CoreMessage } from 'ai';
 import { memoryAgent, MemoryRefinement } from '../agents/memory-agent';
 import { taskAgent } from '../agents/task-agent';
 import { planningAgent } from '../agents/planning-agent';
-import { sessionController } from '../session/session-controller';
+import { sessionController, PendingProposal } from '../session/session-controller';
 import { WorkoutStatus } from '../entities/Workout';
 import { Memory } from '../entities/Memory';
 import dotenv from 'dotenv';
@@ -68,12 +68,12 @@ export class Orchestrator {
    */
   private describeToolAction(toolName: string): string {
     switch (toolName) {
-      case 'create_workout':
-        return 'Scheduling your workout...';
       case 'get_workouts':
         return 'Looking up your workouts...';
       case 'create_plan':
         return 'Creating a personalized workout plan...';
+      case 'confirm_proposal':
+        return 'Saving your workout plan...';
       case 'update_memory':
         return 'Updating my notes...';
       case 'invalidate_memory':
@@ -151,7 +151,7 @@ export class Orchestrator {
     }
 
     // Step 2: Build system prompt with memory context + applied refinement notifications
-    const systemPrompt = this.buildSystemPrompt(memories, appliedRefinements);
+    const systemPrompt = this.buildSystemPrompt(sessionId, memories, appliedRefinements);
 
     // Step 3: Convert conversation history to Anthropic format
     const messages: Anthropic.MessageParam[] = [
@@ -178,6 +178,7 @@ export class Orchestrator {
       // Handle tool calls in a loop (agentic execution)
       let iterationCount = 0;
       const maxIterations = 5;
+      const toolsCalledThisTurn: Set<string> = new Set();
 
       while (response.stop_reason === 'tool_use' && iterationCount < maxIterations) {
         iterationCount++;
@@ -191,7 +192,22 @@ export class Orchestrator {
         // Execute all tool calls
         const toolResults: Anthropic.ToolResultBlockParam[] = [];
         for (const toolCall of toolCalls) {
+          // Guardrail: block confirm_proposal in the same turn as create_plan
+          if (toolsCalledThisTurn.has('create_plan') && toolCall.name === 'confirm_proposal') {
+            console.log(`[Orchestrator] Guardrail: Blocked confirm_proposal — create_plan was called this turn`);
+            toolResults.push({
+              type: 'tool_result',
+              tool_use_id: toolCall.id,
+              content: JSON.stringify({
+                success: false,
+                message: 'Cannot save a workout in the same turn as plan generation. Present the plan to the user first and wait for their confirmation.',
+              }),
+            });
+            continue;
+          }
+
           console.log(`[Orchestrator] Executing tool: ${toolCall.name}`);
+          toolsCalledThisTurn.add(toolCall.name);
 
           await this.emit(onEvent, {
             type: 'action',
@@ -256,38 +272,6 @@ export class Orchestrator {
   private getToolDefinitions(): Anthropic.Tool[] {
     return [
       {
-        name: 'create_workout',
-        description:
-          'Create a new workout. Use this when the user wants to schedule or log a workout.',
-        input_schema: {
-          type: 'object',
-          properties: {
-            type: {
-              type: 'string',
-              description: 'Type of workout (e.g., cardio, strength, yoga)',
-            },
-            duration: {
-              type: 'number',
-              description: 'Duration in minutes',
-            },
-            date: {
-              type: 'string',
-              description: 'Date in ISO format (YYYY-MM-DD)',
-            },
-            description: {
-              type: 'string',
-              description: 'Optional description or notes',
-            },
-            status: {
-              type: 'string',
-              enum: ['scheduled', 'completed', 'cancelled'],
-              description: 'Workout status (defaults to scheduled)',
-            },
-          },
-          required: ['type', 'duration', 'date'],
-        },
-      },
-      {
         name: 'get_workouts',
         description:
           'Retrieve workouts with optional filters. Use this when the user asks about their workout history or schedule.',
@@ -317,7 +301,7 @@ export class Orchestrator {
       {
         name: 'create_plan',
         description:
-          'Generate and save a personalized workout plan based on user goals and constraints. Uses LLM to create a single workout that respects physical constraints from memory, then saves it to the database. Use this when the user asks for a workout plan or routine.',
+          'Generate a personalized workout plan based on user goals and constraints. This does NOT save the workout — it creates a proposal that must be confirmed by the user via confirm_proposal. Use this for forward-looking requests like "plan a workout for tomorrow" or "create a strength routine for me".',
         input_schema: {
           type: 'object',
           properties: {
@@ -325,8 +309,21 @@ export class Orchestrator {
               type: 'string',
               description: "The user's goal or what they want to achieve with the workout",
             },
+            date: {
+              type: 'string',
+              description: 'Target date in ISO format (YYYY-MM-DD). Defaults to today if not specified.',
+            },
           },
           required: ['goal'],
+        },
+      },
+      {
+        name: 'confirm_proposal',
+        description:
+          'Confirm and save the pending workout plan that was previously presented to the user. Use this only after the user has reviewed and approved the proposed plan. Takes no arguments — it saves the plan that is already waiting.',
+        input_schema: {
+          type: 'object',
+          properties: {},
         },
       },
       {
@@ -379,26 +376,6 @@ export class Orchestrator {
    */
   private async executeTool(toolName: string, input: any): Promise<any> {
     switch (toolName) {
-      case 'create_workout':
-        const workout = await taskAgent.createWorkout({
-          type: input.type,
-          duration: input.duration,
-          date: new Date(input.date),
-          description: input.description,
-          status: input.status as WorkoutStatus | undefined,
-        });
-
-        return {
-          success: true,
-          workout: {
-            id: workout.id,
-            type: workout.type,
-            duration: workout.duration,
-            date: workout.date.toISOString(),
-            status: workout.status,
-          },
-        };
-
       case 'get_workouts':
         const filter: any = {};
         if (input.status) filter.status = input.status as WorkoutStatus;
@@ -429,26 +406,65 @@ export class Orchestrator {
           sessionMemories
         );
 
-        // Create a workout based on the generated plan using the Task Agent
-        const plannedWorkout = await taskAgent.createWorkout({
+        // Stash the proposal in session state instead of writing to DB
+        const proposalDate = input.date || new Date().toISOString().split('T')[0];
+        const proposal: PendingProposal = {
           type: generatedPlan.type,
           duration: generatedPlan.duration,
-          date: new Date(), // Default to today, but this could be customized
+          date: proposalDate,
           description: generatedPlan.description,
-          status: 'scheduled' as WorkoutStatus,
+          status: WorkoutStatus.SCHEDULED,
+          explanation: generatedPlan.explanation,
+          goal: input.goal,
+        };
+
+        sessionController.setPendingProposal(this.currentSessionId, proposal);
+
+        return {
+          success: true,
+          proposal: {
+            type: proposal.type,
+            duration: proposal.duration,
+            date: proposal.date,
+            description: proposal.description,
+            explanation: proposal.explanation,
+          },
+          message: 'Plan generated. Present this to the user and wait for their confirmation before saving.',
+        };
+
+      case 'confirm_proposal':
+        const pending = sessionController.getPendingProposal(this.currentSessionId);
+
+        if (!pending) {
+          return {
+            success: false,
+            message: 'No pending proposal to confirm. Use create_plan first to generate a workout plan.',
+          };
+        }
+
+        // Write the proposal to the database via TaskAgent
+        const confirmedWorkout = await taskAgent.createWorkout({
+          type: pending.type,
+          duration: pending.duration,
+          date: new Date(pending.date),
+          description: pending.description,
+          status: pending.status,
         });
+
+        // Clear the proposal from session state
+        sessionController.clearPendingProposal(this.currentSessionId);
 
         return {
           success: true,
           workout: {
-            id: plannedWorkout.id,
-            type: plannedWorkout.type,
-            duration: plannedWorkout.duration,
-            date: plannedWorkout.date.toISOString(),
-            description: plannedWorkout.description,
-            status: plannedWorkout.status,
+            id: confirmedWorkout.id,
+            type: confirmedWorkout.type,
+            duration: confirmedWorkout.duration,
+            date: confirmedWorkout.date.toISOString(),
+            description: confirmedWorkout.description,
+            status: confirmedWorkout.status,
           },
-          explanation: generatedPlan.explanation,
+          message: 'Workout plan confirmed and saved.',
         };
 
       case 'update_memory':
@@ -487,7 +503,7 @@ export class Orchestrator {
   /**
    * Build a system prompt that includes relevant memories and any pending conflicts
    */
-  private buildSystemPrompt(memories: Memory[], refinements: MemoryRefinement[] = []): string {
+  private buildSystemPrompt(sessionId: string, memories: Memory[], refinements: MemoryRefinement[] = []): string {
     const currentDate = new Date().toISOString().split('T')[0];
 
     let systemPrompt = `You are a friendly, conversational fitness buddy who helps users track workouts and create personalized plans.
@@ -495,9 +511,9 @@ export class Orchestrator {
 Today's date is ${currentDate}.
 
 ## Your Capabilities
-- Create and manage workouts (schedule, log, or cancel)
+- Generate personalized workout plans based on user goals and constraints
 - Retrieve workout history with filters
-- Generate structured workout plans based on user goals
+- Remember user facts (injuries, preferences, goals) and use them to guide planning
 
 ## Communication Style
 - Talk like a supportive friend, not a form or a database.
@@ -515,6 +531,22 @@ Today's date is ${currentDate}.
 2. Use the available tools to perform actions — don't just describe what to do
 3. When creating workouts, use appropriate types (cardio, strength, yoga, etc.)
 4. Dates should be in YYYY-MM-DD format when calling tools, but always use natural language with the user (e.g., "this Thursday" not "2026-02-19")
+
+## Workout Planning Flow
+
+All workout creation goes through a two-turn confirmation flow:
+
+1. When the user asks for a workout plan, use create_plan to generate a personalized plan
+2. Present the plan to the user in a friendly, conversational way — include what the workout involves, how long it is, and why you chose it
+3. Ask the user clearly whether you should schedule the workout. Use direct language like "Should I go ahead and schedule this?" or "Want me to save this workout?" — not vague prompts like "ready to give it a go?"
+4. When asking for confirmation, restate the key details in a brief summary: workout type, duration, date, and any notable accommodations. The user should be able to say yes based on the confirmation message alone, without re-reading earlier messages.
+5. Only after the user confirms (on a subsequent message), use confirm_proposal to save it
+6. If the user wants changes, use create_plan again with an adjusted goal
+7. If the user rejects the plan entirely, acknowledge it and move on — do NOT save anything
+
+### Key Rules
+- NEVER call confirm_proposal in the same response where you called create_plan. You must present the plan and wait for the user's next message.
+- All workout creation goes through create_plan → confirm_proposal. There is no way to create a workout without this two-turn flow.
 `;
 
     // Add memory context if available
@@ -586,6 +618,23 @@ Use the memory ID from the User Context section above.
       }
 
       systemPrompt += '\nBriefly and naturally acknowledge these updates in your response — for example, "Got it, I\'ll keep in mind that your shoulder is dislocated" — woven into whatever else you\'re saying. Do not use technical language like "updated my records" or "noted in the system."\n';
+    }
+
+    // Add pending proposal context if one exists
+    const pendingProposal = sessionController.getPendingProposal(sessionId);
+    if (pendingProposal) {
+      systemPrompt += `\n## Pending Workout Proposal
+There is a workout plan waiting for the user's confirmation:
+- Type: ${pendingProposal.type}
+- Duration: ${pendingProposal.duration} minutes
+- Date: ${pendingProposal.date}
+- Description: ${pendingProposal.description}
+- Explanation: ${pendingProposal.explanation}
+
+If the user confirms (e.g., "yes", "looks good", "go ahead"), use confirm_proposal to save it.
+If the user wants changes, use create_plan again with an adjusted goal. The original goal was: "${pendingProposal.goal}"
+If the user rejects it or changes topic, acknowledge their decision and move on.
+`;
     }
 
     return systemPrompt;
