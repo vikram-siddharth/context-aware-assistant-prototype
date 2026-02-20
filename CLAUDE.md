@@ -42,7 +42,7 @@ Postgres (TypeORM)
 - Memory extraction is best-effort (try/catch everything) — awaited before the main LLM call so refinement signals are available
 - Memory deduplication happens during extraction — pass existing active memories to the LLM and ask it to extract only new facts
 - Memory management is orchestrator-driven — the orchestrator LLM uses `invalidate_memory` (contradictions/resolutions) and `update_memory` (refinements/evolution where the fact still matters) tools
-- Memory changes require user confirmation via two-turn flow — the LLM asks for confirmation in one turn (no tool call), and only calls the memory tool on the next turn after the user responds. A guardrail in `processMessage` blocks `update_memory`/`invalidate_memory` from executing unless a prior confirmation request was made (tracked via `pendingMemoryChanges` in session state).
+- Memory changes require user confirmation via two-turn flow — the LLM asks for confirmation in one turn (no tool call), and only calls the memory tool on the next turn after the user responds. A guardrail in `processMessage` blocks `update_memory`/`invalidate_memory` from executing unless a prior confirmation was registered for the specific memory ID (tracked via `pendingMemoryChanges` — a per-memory-ID authorization map with turn-based expiry). The LLM has a 3-turn patience window before proceeding silently on unacknowledged confirmations.
 - Inference-based memory updates are allowed — if the user says something that implies a stored fact may have changed, the orchestrator asks to confirm before updating (e.g., "I ran a 10K" when a knee injury is stored → ask if it's healed)
 - Four categories of memory change: contradictions (no longer true → invalidate), refinements (more specific info → update), evolution (condition changed but still relevant → update), resolution (fully resolved, no longer influences behavior → invalidate)
 - Memory invalidation uses soft-delete (active = false) — invalidated memories stay in the database for history
@@ -67,9 +67,9 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - Uses Anthropic SDK directly (@anthropic-ai/sdk) for full control over tool definitions
 - Implements agentic loop to handle multi-step tool usage (max 5 iterations)
 - Tool definitions come from agents via `ToolProvider.getTools()` — the Orchestrator builds a unified registry at startup via `buildToolRegistry()` and converts definitions to Anthropic format in `getToolDefinitions()`
-- `applyToolWrappers(registry)` wraps agent-owned tools with orchestrator-level coordination: `create_plan` gets session memories injected and stashes proposals; `confirm_proposal` reads/clears pending proposals from session state; `update_memory`/`invalidate_memory` refresh the session memory cache after mutations
+- `applyToolWrappers(registry)` wraps agent-owned tools with orchestrator-level coordination: `create_plan` gets session memories injected and stashes proposals; `confirm_proposal` reads/clears pending proposals from session state; `update_memory`/`invalidate_memory`/`set_memory_expiry` refresh the session memory cache after mutations
 - `executeTool()` is a simple registry lookup — no switch/case routing
-- LLM-callable tools: `get_workouts`, `create_plan`, `confirm_proposal`, `update_memory`, `invalidate_memory`
+- LLM-callable tools: `get_workouts`, `create_plan`, `confirm_proposal`, `update_memory`, `invalidate_memory`, `set_memory_expiry`
 - `processMessage()` returns `{ response: string }`
 - Accepts optional `onEvent` callback (`EventCallback`) for SSE streaming
 - Exports `OrchestratorEvent` type: `{ type: 'thinking' | 'action' | 'result' | 'error', content: string }`
@@ -83,21 +83,26 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - `create_plan` wrapper (in `applyToolWrappers`) injects session memories, calls Planning Agent, stashes the generated plan as a `PendingProposal` in session state (does NOT write to DB), and returns plan details + message telling the LLM to present and wait
 - `confirm_proposal` wrapper reads the pending proposal from session state, passes it to Task Agent's execute function, writes it to DB, and clears the proposal
 - Guardrail: `toolsCalledThisTurn` Set tracks tool names per `processMessage()` call; blocks `confirm_proposal` if `create_plan` was already called in the same turn
-- Guardrail: `pendingMemoryChanges` in session state enforces confirmation for memory mutations — `update_memory`/`invalidate_memory` are blocked unless the session has a pending memory change flag. Two arming paths: (1) **extraction path** — flag pre-armed when extraction detects refinements, allowing the tool on the next turn after user confirms; (2) **inference path** — flag set when the guardrail blocks a tool call, error message tells the LLM to retry immediately if the user already confirmed (block-then-retry within the same agentic loop). Flag is cleared when the tool successfully executes.
+- Guardrail: `pendingMemoryChanges` in session state enforces confirmation for memory mutations at the per-memory-ID level. `update_memory`/`invalidate_memory` are blocked unless the specific memory ID has been authorized via `isMemoryChangeAuthorized()`. Two arming paths: (1) **extraction path** — specific memory IDs pre-armed when extraction detects refinements, via `armPendingMemoryChanges(sessionId, memoryIds)`; (2) **inference path** — specific memory ID armed when the guardrail blocks a tool call, error message tells the LLM to retry immediately if the user already confirmed (block-then-retry within the same agentic loop). Authorization is consumed per-memory-ID via `consumeMemoryChange()` when the tool executes — other authorized memories remain available in the same agentic loop. Turn counter increments at the start of each `processMessage()`; `expireStaleChanges()` removes authorizations older than 3 turns to prevent stale flags.
 - System prompt includes "Session Intent vs. Durable Facts" section with linguistic test (conditional mood = session intent, indicative mood = durable fact)
 - System prompt includes "Workout Planning Flow" section describing the two-turn confirmation flow (create_plan → confirm_proposal)
 - System prompt includes "Pending Workout Proposal" section (conditional) when a proposal exists, with instructions for confirm/modify/reject
+- System prompt includes "Setting Expiry on Memories" section instructing the LLM to determine if new facts have natural endpoints, ask the user about timeframe conversationally, and fall back to estimation if the user doesn't answer
+- System prompt includes "Expiring Memories — Check-In Needed" section (conditional) when memories are expired or within 2 weeks of expiry, with category-specific check-in rules (goals/preferences: proactive; constraints: when relevant)
+- Memory context listing now includes expiry dates inline for memories that have them (e.g., `(expires: 2026-03-15)`)
+- `set_memory_expiry` does NOT require the two-turn confirmation guardrail — it can be called directly since it only sets a date, not changing the substance of a fact
 
 ### Session Controller
 - In-memory Map storing conversation history by session ID
 - Uses AI SDK's CoreMessage type for message format compatibility
-- Three Maps + one Set: `sessions` (conversation history), `sessionMemories` (cached memories), `pendingProposals` (pending workout proposals), `pendingMemoryChanges` (sessions awaiting memory change confirmation)
+- Four Maps: `sessions` (conversation history), `sessionMemories` (cached memories), `pendingProposals` (pending workout proposals), `pendingMemoryChanges` (per-memory-ID authorization tracking with turn counter)
 - Exports `PendingProposal` type: `{ type, duration, date (ISO string), description, status, explanation, goal }`
-- Methods: addMessage, getHistory, setSessionMemories, getSessionMemories, hasLoadedMemories, clearSession, getActiveSessions, hasSession, setPendingProposal, getPendingProposal, clearPendingProposal, hasPendingProposal, setPendingMemoryChange, hasPendingMemoryChange, clearPendingMemoryChange
-- `clearSession()` clears all three Maps and the Set for the session
+- Exports `PendingMemoryChange` type: `{ memoryId, armedAtTurn }` and `PendingMemoryChangeSet` type: `{ changes: Map<string, PendingMemoryChange>, currentTurn: number }`
+- Methods: addMessage, getHistory, setSessionMemories, getSessionMemories, hasLoadedMemories, clearSession, getActiveSessions, hasSession, setPendingProposal, getPendingProposal, clearPendingProposal, hasPendingProposal, armPendingMemoryChanges, isMemoryChangeAuthorized, consumeMemoryChange, incrementTurn, expireStaleChanges, hasPendingMemoryChanges, getPendingMemoryChangeIds
+- `clearSession()` clears all four Maps for the session
 
 ### Memory Agent
-- Implements `ToolProvider` — owns `update_memory` and `invalidate_memory` tools
+- Implements `ToolProvider` — owns `update_memory`, `invalidate_memory`, and `set_memory_expiry` tools
 - Extraction is best-effort, never throws errors — returns `ExtractionResult { newMemories, refinements }`
 - Extraction has two jobs: (1) extract genuinely new facts, (2) detect refinements to existing memories
 - Extraction prompt includes "Session Intent vs. Durable Facts" section: conditional/volitional phrasing ("I'd like to swim", "I'd love to swim") is session intent and must NOT be extracted; general/habitual phrasing ("I like swimming", "I love swimming") is a durable fact and should be extracted
@@ -107,6 +112,7 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - Retrieval uses LLM-based relevance scoring (0-10 scale, returns only scores ≥5)
 - All queries filter by `active: true` — invalidated memories are hidden from retrieval and extraction
 - `invalidateMemory(id)` sets `active = false` (soft-delete for history preservation)
+- `setMemoryExpiry(id, date)` updates `estimated_expiry` column — used for facts with natural endpoints
 - All database operations wrapped in try/catch
 
 ### Planning Agent
@@ -171,4 +177,6 @@ Integration test (`test-orchestrator.ts`) validates:
 - [x] User confirmation for domain actions (Decision 11: two-turn plan→confirm flow, guardrail, pending proposals in session state)
 - [x] Dynamic tool registration (Decision 12: ToolProvider interface, registry with collision detection, orchestrator wrappers)
 - [x] Session intent vs. durable facts filtering (linguistic test in Memory Agent extraction prompt and Orchestrator system prompt)
-- [x] Memory expiry column (estimated_expiry: nullable date, defaults to null — Orchestrator will fill conversationally in piece 2)
+- [x] Memory expiry column (estimated_expiry: nullable date, defaults to null)
+- [x] Memory expiry behavior (`set_memory_expiry` tool, conversational estimation with fallback, check-in on expiring/expired memories at session start)
+- [x] Memory-ID-specific confirmation guardrail (Decision 15: per-memory-ID authorization with turn counter, 3-turn patience window, stale flag prevention)

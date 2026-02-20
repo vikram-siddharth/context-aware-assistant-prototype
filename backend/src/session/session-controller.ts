@@ -2,6 +2,16 @@ import { CoreMessage } from 'ai';
 import { Memory } from '../entities/Memory';
 import { WorkoutStatus } from '../entities/Workout';
 
+export interface PendingMemoryChange {
+  memoryId: string;
+  armedAtTurn: number;
+}
+
+export interface PendingMemoryChangeSet {
+  changes: Map<string, PendingMemoryChange>;  // keyed by memoryId
+  currentTurn: number;
+}
+
 export interface PendingProposal {
   type: string;
   duration: number;
@@ -20,13 +30,13 @@ export class SessionController {
   private sessions: Map<string, CoreMessage[]>;
   private sessionMemories: Map<string, Memory[]>;
   private pendingProposals: Map<string, PendingProposal>;
-  private pendingMemoryChanges: Set<string>;
+  private pendingMemoryChanges: Map<string, PendingMemoryChangeSet>;
 
   constructor() {
     this.sessions = new Map();
     this.sessionMemories = new Map();
     this.pendingProposals = new Map();
-    this.pendingMemoryChanges = new Set();
+    this.pendingMemoryChanges = new Map();
   }
 
   /**
@@ -124,25 +134,92 @@ export class SessionController {
   }
 
   /**
-   * Mark that the LLM has asked the user to confirm a memory change.
-   * The memory tool is blocked until this flag is set.
+   * Arm specific memory IDs as authorized for mutation.
+   * Only adds entries that don't already exist (preserves original armedAtTurn).
+   * Called by the extraction path (pre-arming) and the inference path (block-then-retry).
    */
-  setPendingMemoryChange(sessionId: string): void {
-    this.pendingMemoryChanges.add(sessionId);
+  armPendingMemoryChanges(sessionId: string, memoryIds: string[]): void {
+    if (!this.pendingMemoryChanges.has(sessionId)) {
+      this.pendingMemoryChanges.set(sessionId, {
+        changes: new Map(),
+        currentTurn: 0,
+      });
+    }
+    const changeSet = this.pendingMemoryChanges.get(sessionId)!;
+    for (const memoryId of memoryIds) {
+      if (!changeSet.changes.has(memoryId)) {
+        changeSet.changes.set(memoryId, {
+          memoryId,
+          armedAtTurn: changeSet.currentTurn,
+        });
+      }
+    }
   }
 
   /**
-   * Check if the LLM has previously asked for memory change confirmation.
+   * Check if a specific memory ID is authorized for mutation.
    */
-  hasPendingMemoryChange(sessionId: string): boolean {
-    return this.pendingMemoryChanges.has(sessionId);
+  isMemoryChangeAuthorized(sessionId: string, memoryId: string): boolean {
+    const changeSet = this.pendingMemoryChanges.get(sessionId);
+    if (!changeSet) return false;
+    return changeSet.changes.has(memoryId);
   }
 
   /**
-   * Clear the pending memory change flag after the tool executes.
+   * Remove a single memory ID's authorization after successful tool execution.
+   * Cleans up the PendingMemoryChangeSet if no changes remain.
    */
-  clearPendingMemoryChange(sessionId: string): void {
-    this.pendingMemoryChanges.delete(sessionId);
+  consumeMemoryChange(sessionId: string, memoryId: string): void {
+    const changeSet = this.pendingMemoryChanges.get(sessionId);
+    if (!changeSet) return;
+    changeSet.changes.delete(memoryId);
+    if (changeSet.changes.size === 0) {
+      this.pendingMemoryChanges.delete(sessionId);
+    }
+  }
+
+  /**
+   * Increment the turn counter for a session. Called at the start of processMessage.
+   */
+  incrementTurn(sessionId: string): void {
+    const changeSet = this.pendingMemoryChanges.get(sessionId);
+    if (changeSet) {
+      changeSet.currentTurn++;
+    }
+  }
+
+  /**
+   * Expire any pending memory changes older than maxTurns.
+   * Called at the start of processMessage, after incrementing the turn.
+   */
+  expireStaleChanges(sessionId: string, maxTurns: number = 3): void {
+    const changeSet = this.pendingMemoryChanges.get(sessionId);
+    if (!changeSet) return;
+    for (const [memoryId, change] of changeSet.changes) {
+      if (changeSet.currentTurn - change.armedAtTurn > maxTurns) {
+        changeSet.changes.delete(memoryId);
+      }
+    }
+    if (changeSet.changes.size === 0) {
+      this.pendingMemoryChanges.delete(sessionId);
+    }
+  }
+
+  /**
+   * Check if any pending memory changes exist for a session.
+   */
+  hasPendingMemoryChanges(sessionId: string): boolean {
+    const changeSet = this.pendingMemoryChanges.get(sessionId);
+    return changeSet !== undefined && changeSet.changes.size > 0;
+  }
+
+  /**
+   * Get all pending memory IDs for a session.
+   */
+  getPendingMemoryChangeIds(sessionId: string): string[] {
+    const changeSet = this.pendingMemoryChanges.get(sessionId);
+    if (!changeSet) return [];
+    return Array.from(changeSet.changes.keys());
   }
 }
 

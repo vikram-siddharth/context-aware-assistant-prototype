@@ -171,69 +171,70 @@ async function testInvalidateNonexistentMemory() {
 }
 
 // ============================================================
-// PART B: Guardrail mechanics
+// PART B: Guardrail mechanics (per-memory-ID tracking)
 // ============================================================
 
 async function testGuardrailBlocksFirstCall() {
   console.log('\n--- Test B1: Guardrail blocks memory tool on first call (no pending confirmation) ---');
   const sessionId = 'test-guardrail-block';
+  const memoryId = 'mem-block-test';
   setCurrentSessionId(sessionId);
 
-  // Ensure no pending memory change
-  sessionController.clearPendingMemoryChange(sessionId);
-  assert(sessionController.hasPendingMemoryChange(sessionId) === false, 'no pending change initially');
+  // Ensure no pending memory change for this specific memory
+  assert(sessionController.isMemoryChangeAuthorized(sessionId, memoryId) === false, 'no authorization initially');
 
   // Simulate what processMessage does when the LLM calls update_memory:
-  // 1. Check hasPendingMemoryChange → false → BLOCK
-  const wouldBlock = !sessionController.hasPendingMemoryChange(sessionId);
-  assert(wouldBlock === true, 'guardrail would block (no pending confirmation)');
+  // 1. Check isMemoryChangeAuthorized → false → BLOCK
+  const wouldBlock = !sessionController.isMemoryChangeAuthorized(sessionId, memoryId);
+  assert(wouldBlock === true, 'guardrail would block (no authorization for this memory ID)');
 
-  // 2. Set the pending flag (what the guardrail does on block)
-  sessionController.setPendingMemoryChange(sessionId);
-  assert(sessionController.hasPendingMemoryChange(sessionId) === true, 'flag set after block');
+  // 2. Arm the specific memory ID (what the guardrail does on block)
+  sessionController.armPendingMemoryChanges(sessionId, [memoryId]);
+  assert(sessionController.isMemoryChangeAuthorized(sessionId, memoryId) === true, 'memory ID armed after block');
 }
 
 async function testGuardrailAllowsAfterConfirmation() {
-  console.log('\n--- Test B2: Guardrail allows memory tool after confirmation (pending flag set) ---');
+  console.log('\n--- Test B2: Guardrail allows memory tool after confirmation (memory ID armed) ---');
   const sessionId = 'test-guardrail-allow';
+  const memoryId = 'mem-allow-test';
   setCurrentSessionId(sessionId);
 
-  // Simulate: the guardrail blocked a previous call and set the flag
-  sessionController.setPendingMemoryChange(sessionId);
-  assert(sessionController.hasPendingMemoryChange(sessionId) === true, 'pending flag is set');
+  // Simulate: the guardrail blocked a previous call and armed the memory ID
+  sessionController.armPendingMemoryChanges(sessionId, [memoryId]);
+  assert(sessionController.isMemoryChangeAuthorized(sessionId, memoryId) === true, 'memory ID is armed');
 
   // Simulate: user confirmed, LLM calls the tool again
-  // 1. Check hasPendingMemoryChange → true → ALLOW
-  const wouldBlock = !sessionController.hasPendingMemoryChange(sessionId);
-  assert(wouldBlock === false, 'guardrail would NOT block (pending confirmation exists)');
+  // 1. Check isMemoryChangeAuthorized → true → ALLOW
+  const wouldBlock = !sessionController.isMemoryChangeAuthorized(sessionId, memoryId);
+  assert(wouldBlock === false, 'guardrail would NOT block (authorization exists)');
 
-  // 2. Clear the flag (what the guardrail does before execution)
-  sessionController.clearPendingMemoryChange(sessionId);
-  assert(sessionController.hasPendingMemoryChange(sessionId) === false, 'flag cleared after execution');
+  // 2. Consume the authorization (what the guardrail does after execution)
+  sessionController.consumeMemoryChange(sessionId, memoryId);
+  assert(sessionController.isMemoryChangeAuthorized(sessionId, memoryId) === false, 'authorization consumed after execution');
 }
 
 async function testGuardrailFullCycle() {
-  console.log('\n--- Test B3: Full guardrail cycle — block → set flag → allow → clear flag ---');
+  console.log('\n--- Test B3: Full guardrail cycle — block → arm → allow → consume ---');
   const sessionId = 'test-guardrail-cycle';
+  const memoryId = 'mem-cycle-test';
   setCurrentSessionId(sessionId);
-  sessionController.clearPendingMemoryChange(sessionId);
 
   // Turn 1: LLM tries to call update_memory
-  // Guardrail check: no pending → BLOCK
-  assert(!sessionController.hasPendingMemoryChange(sessionId), 'Turn 1: no pending change');
-  // Guardrail action: set flag, return error
-  sessionController.setPendingMemoryChange(sessionId);
+  // Guardrail check: not authorized → BLOCK
+  assert(!sessionController.isMemoryChangeAuthorized(sessionId, memoryId), 'Turn 1: no authorization');
+  // Guardrail action: arm memory ID, return error
+  sessionController.armPendingMemoryChanges(sessionId, [memoryId]);
   // (LLM generates text asking user to confirm)
 
   // Turn 2: User confirms, LLM calls update_memory again
-  // Guardrail check: pending → ALLOW
-  assert(sessionController.hasPendingMemoryChange(sessionId), 'Turn 2: pending change exists');
-  // Guardrail action: clear flag, execute tool
-  sessionController.clearPendingMemoryChange(sessionId);
-  assert(!sessionController.hasPendingMemoryChange(sessionId), 'Turn 2: flag cleared after execution');
+  // Guardrail check: authorized → ALLOW
+  assert(sessionController.isMemoryChangeAuthorized(sessionId, memoryId), 'Turn 2: authorization exists');
+  // Guardrail action: consume authorization, execute tool
+  sessionController.consumeMemoryChange(sessionId, memoryId);
+  assert(!sessionController.isMemoryChangeAuthorized(sessionId, memoryId), 'Turn 2: authorization consumed after execution');
 
-  // Turn 3: Another memory change attempt should be blocked again
-  assert(!sessionController.hasPendingMemoryChange(sessionId), 'Turn 3: fresh start — no pending change');
+  // Turn 3: Another attempt on the same memory should be blocked again
+  assert(!sessionController.isMemoryChangeAuthorized(sessionId, memoryId), 'Turn 3: fresh start — no authorization');
 }
 
 async function testGuardrailEventSuppression() {
@@ -243,23 +244,12 @@ async function testGuardrailEventSuppression() {
 
   // The guardrail code path:
   //
-  // BLOCKED path (lines 206-222):
-  //   if (!hasPendingMemoryChange) → push error result, CONTINUE
-  //   → emit() is never reached (it's on line 232, after the block)
+  // BLOCKED path: if (!isMemoryChangeAuthorized) → push error result, CONTINUE
+  //   → emit() is never reached (it comes after the block)
   //
-  // ALLOWED path (lines 224-235):
-  //   if (hasPendingMemoryChange) → clear flag, fall through to emit() + executeTool()
-  //
-  // Verify by tracing the code structure:
+  // ALLOWED path: isMemoryChangeAuthorized → true → consume, fall through to emit() + executeTool()
 
-  // When blocked: the 'continue' on line 221 skips everything after, including emit()
-  // When allowed: the code falls through to emit() on line 232
-
-  // We can verify this mechanically: the 'continue' statement ensures
-  // no event is emitted for blocked calls
-  const buildSystemPrompt = (orchestrator as any).buildSystemPrompt.bind(orchestrator);
-
-  // Also verify: the describeToolAction still returns the right strings
+  // Verify: the describeToolAction still returns the right strings
   const describeToolAction = (orchestrator as any).describeToolAction.bind(orchestrator);
   assert(
     describeToolAction('update_memory') === 'Updating my notes...',
@@ -271,50 +261,68 @@ async function testGuardrailEventSuppression() {
   );
 
   // Structural assertion: both guardrail blocks use 'continue' which skips the emit() call
-  // This is verified by code inspection — the blocked path never reaches the emit on line 232
   assert(true, 'Blocked path uses continue → skips emit (verified by code structure)');
   assert(true, 'Allowed path falls through to emit → event is emitted (verified by code structure)');
 }
 
 async function testGuardrailAppliesToBothTools() {
-  console.log('\n--- Test B5: Guardrail applies to both update_memory and invalidate_memory ---');
+  console.log('\n--- Test B5: Guardrail applies to both update_memory and invalidate_memory via same memory ID ---');
   const sessionId = 'test-guardrail-both';
+  const memoryId = 'mem-both-test';
   setCurrentSessionId(sessionId);
 
-  // Test update_memory path
-  sessionController.clearPendingMemoryChange(sessionId);
-  assert(!sessionController.hasPendingMemoryChange(sessionId), 'update_memory: no pending change → would block');
-  sessionController.setPendingMemoryChange(sessionId);
-  assert(sessionController.hasPendingMemoryChange(sessionId), 'update_memory: after block → flag set');
-  sessionController.clearPendingMemoryChange(sessionId);
+  // Test: arming a memory ID authorizes both update_memory and invalidate_memory for that ID
+  // (the guardrail checks the memory ID, not the tool name)
+  sessionController.armPendingMemoryChanges(sessionId, [memoryId]);
+  assert(sessionController.isMemoryChangeAuthorized(sessionId, memoryId), 'memory ID armed — both tools would be allowed');
 
-  // Test invalidate_memory path (same session, fresh state)
-  assert(!sessionController.hasPendingMemoryChange(sessionId), 'invalidate_memory: no pending change → would block');
-  sessionController.setPendingMemoryChange(sessionId);
-  assert(sessionController.hasPendingMemoryChange(sessionId), 'invalidate_memory: after block → flag set');
-  sessionController.clearPendingMemoryChange(sessionId);
+  // After consuming, neither tool would be allowed
+  sessionController.consumeMemoryChange(sessionId, memoryId);
+  assert(!sessionController.isMemoryChangeAuthorized(sessionId, memoryId), 'memory ID consumed — both tools would be blocked');
 
   // The guardrail condition checks: (toolCall.name === 'update_memory' || toolCall.name === 'invalidate_memory')
-  // Both tools share the same flag — this is intentional (one confirmation arms both)
-  assert(true, 'Both tools share the same pending flag (one confirmation arms both)');
+  // and then checks isMemoryChangeAuthorized for the specific memoryId
+  assert(true, 'Authorization is per-memory-ID, not per-tool-name');
 }
 
 async function testGuardrailDoesNotAffectOtherTools() {
   console.log('\n--- Test B6: Guardrail does NOT affect non-memory tools ---');
   const sessionId = 'test-guardrail-other';
   setCurrentSessionId(sessionId);
-  sessionController.clearPendingMemoryChange(sessionId);
   sessionController.setSessionMemories(sessionId, []);
 
-  // get_workouts should work regardless of pending memory change flag
+  // get_workouts should work regardless of pending memory change state
   const result = await executeToolDirect('get_workouts', {});
   assert(result.success === true || Array.isArray(result.workouts) || result.workouts !== undefined,
     'get_workouts executes normally (not blocked by guardrail)');
 
   // The guardrail only checks for update_memory and invalidate_memory
   // Other tools pass straight through
-  assert(!sessionController.hasPendingMemoryChange(sessionId),
-    'non-memory tool does not set the pending flag');
+  assert(!sessionController.hasPendingMemoryChanges(sessionId),
+    'non-memory tool does not arm any memory changes');
+}
+
+async function testGuardrailTwoMemoriesInOneLoop() {
+  console.log('\n--- Test B7: Two memories armed — first consumes one, second still authorized ---');
+  const sessionId = 'test-guardrail-two-mem';
+  const memA = 'mem-a-test';
+  const memB = 'mem-b-test';
+  setCurrentSessionId(sessionId);
+
+  // Simulate: extraction detected two refinements, both are pre-armed
+  sessionController.armPendingMemoryChanges(sessionId, [memA, memB]);
+  assert(sessionController.isMemoryChangeAuthorized(sessionId, memA), 'mem-a authorized');
+  assert(sessionController.isMemoryChangeAuthorized(sessionId, memB), 'mem-b authorized');
+
+  // Simulate: LLM calls update_memory for mem-a → guardrail allows, consumes mem-a
+  sessionController.consumeMemoryChange(sessionId, memA);
+  assert(!sessionController.isMemoryChangeAuthorized(sessionId, memA), 'mem-a consumed after execution');
+  assert(sessionController.isMemoryChangeAuthorized(sessionId, memB), 'mem-b STILL authorized (core bug fix)');
+
+  // Simulate: LLM calls invalidate_memory for mem-b → guardrail allows, consumes mem-b
+  sessionController.consumeMemoryChange(sessionId, memB);
+  assert(!sessionController.isMemoryChangeAuthorized(sessionId, memB), 'mem-b consumed after execution');
+  assert(!sessionController.hasPendingMemoryChanges(sessionId), 'no pending changes remain');
 }
 
 // ============================================================
@@ -358,6 +366,7 @@ async function main() {
     await testGuardrailEventSuppression();
     await testGuardrailAppliesToBothTools();
     await testGuardrailDoesNotAffectOtherTools();
+    await testGuardrailTwoMemoriesInOneLoop();
 
   } finally {
     console.log('\n' + '='.repeat(70));

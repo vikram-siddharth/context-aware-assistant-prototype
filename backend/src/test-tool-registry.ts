@@ -62,11 +62,12 @@ function testAllToolsRegistered() {
   console.log('\n--- Test 1: All 5 tools registered from 3 agents ---');
   const registry: Map<string, any> = (orchestrator as any).toolRegistry;
 
-  assert(registry.size === 5, `registry has 5 tools (got ${registry.size})`);
+  assert(registry.size === 6, `registry has 6 tools (got ${registry.size})`);
   assert(registry.has('get_workouts'), 'get_workouts registered');
   assert(registry.has('confirm_proposal'), 'confirm_proposal registered');
   assert(registry.has('create_plan'), 'create_plan registered');
   assert(registry.has('update_memory'), 'update_memory registered');
+  assert(registry.has('set_memory_expiry'), 'set_memory_expiry registered');
   assert(registry.has('invalidate_memory'), 'invalidate_memory registered');
 }
 
@@ -75,7 +76,7 @@ function testToolDefinitionsFormat() {
   const tools = getToolDefinitions();
 
   assert(Array.isArray(tools), 'getToolDefinitions returns an array');
-  assert(tools.length === 5, `returns 5 tool definitions (got ${tools.length})`);
+  assert(tools.length === 6, `returns 6 tool definitions (got ${tools.length})`);
 
   for (const tool of tools) {
     assert(typeof tool.name === 'string' && tool.name.length > 0, `${tool.name}: has name`);
@@ -92,6 +93,10 @@ function testToolDefinitionsFormat() {
   const confirmProposal = tools.find((t: any) => t.name === 'confirm_proposal');
   const confirmProps = Object.keys(confirmProposal.input_schema.properties || {});
   assert(confirmProps.length === 0, 'confirm_proposal has no properties (takes no args)');
+
+  const setMemExpiry = tools.find((t: any) => t.name === 'set_memory_expiry');
+  assert(setMemExpiry.input_schema.required?.includes('memoryId'), 'set_memory_expiry requires memoryId');
+  assert(setMemExpiry.input_schema.required?.includes('date'), 'set_memory_expiry requires date');
 
   const updateMemory = tools.find((t: any) => t.name === 'update_memory');
   assert(updateMemory.input_schema.required?.includes('memoryId'), 'update_memory requires memoryId');
@@ -110,6 +115,7 @@ function testActionDescriptions() {
   assert(describeToolAction('create_plan') === 'Creating a personalized workout plan...', 'create_plan description');
   assert(describeToolAction('confirm_proposal') === 'Saving your workout plan...', 'confirm_proposal description');
   assert(describeToolAction('update_memory') === 'Updating my notes...', 'update_memory description');
+  assert(describeToolAction('set_memory_expiry') === 'Updating my notes...', 'set_memory_expiry description');
   assert(describeToolAction('invalidate_memory') === 'Updating my notes...', 'invalidate_memory description');
   assert(describeToolAction('nonexistent_tool') === 'Working on that...', 'unknown tool gets default');
 }
@@ -178,8 +184,9 @@ function testAgentToolOwnership() {
 
   const memoryTools = memoryAgent.getTools().map(t => t.name);
   assert(memoryTools.includes('update_memory'), 'MemoryAgent owns update_memory');
+  assert(memoryTools.includes('set_memory_expiry'), 'MemoryAgent owns set_memory_expiry');
   assert(memoryTools.includes('invalidate_memory'), 'MemoryAgent owns invalidate_memory');
-  assert(memoryTools.length === 2, `MemoryAgent has 2 tools (got ${memoryTools.length})`);
+  assert(memoryTools.length === 3, `MemoryAgent has 3 tools (got ${memoryTools.length})`);
 
   const planningTools = planningAgent.getTools().map(t => t.name);
   assert(planningTools.includes('create_plan'), 'PlanningAgent owns create_plan');

@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import { orchestrator } from './orchestrator';
 import { sessionController } from './session/session-controller';
 import { Memory, MemoryCategory, MemoryPersistence } from './entities/Memory';

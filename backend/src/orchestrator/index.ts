@@ -98,6 +98,10 @@ export class Orchestrator {
     console.log('[Orchestrator] Processing message:', userMessage);
     this.currentSessionId = sessionId;
 
+    // Advance the turn counter and expire stale memory change authorizations
+    sessionController.incrementTurn(sessionId);
+    sessionController.expireStaleChanges(sessionId, 3);
+
     // Step 1: Load memories (once per session) and extract new ones
     const isFirstMessage = !sessionController.hasLoadedMemories(sessionId);
     let memories: Memory[];
@@ -132,11 +136,12 @@ export class Orchestrator {
     if (detectedRefinements.length > 0) {
       console.log(`[Orchestrator] Detected ${detectedRefinements.length} refinement(s) — passing to LLM for confirmation`);
 
-      // Pre-arm the memory confirmation flag. The LLM will ask the user to
-      // confirm (no tool call this turn). On the next turn, when the user
-      // confirms and the LLM calls update_memory/invalidate_memory, the
-      // guardrail sees the flag and allows execution.
-      sessionController.setPendingMemoryChange(sessionId);
+      // Pre-arm specific memory IDs. The LLM will ask the user to confirm
+      // (no tool call this turn). On the next turn, when the user confirms
+      // and the LLM calls update_memory/invalidate_memory, the guardrail
+      // checks the specific memory ID and allows execution.
+      const memoryIds = detectedRefinements.map(r => r.existingMemoryId);
+      sessionController.armPendingMemoryChanges(sessionId, memoryIds);
     }
 
     // Step 2: Build system prompt with memory context + detected refinement signals
@@ -195,29 +200,31 @@ export class Orchestrator {
             continue;
           }
 
-          // Guardrail: block memory mutation tools unless user confirmation was received in a prior turn.
-          // Sets the flag on block so the tool can succeed on retry — either within the
+          // Guardrail: block memory mutation tools unless user confirmation was received for the specific memory.
+          // Arms the memory ID on block so the tool can succeed on retry — either within the
           // same agentic loop (inference path) or on the next processMessage call (extraction path).
-          if (
-            (toolCall.name === 'update_memory' || toolCall.name === 'invalidate_memory') &&
-            !sessionController.hasPendingMemoryChange(this.currentSessionId)
-          ) {
-            console.log(`[Orchestrator] Guardrail: Blocked ${toolCall.name} — user confirmation required first`);
-            sessionController.setPendingMemoryChange(this.currentSessionId);
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: toolCall.id,
-              content: JSON.stringify({
-                success: false,
-                message: 'This tool was blocked because no prior confirmation was registered. Check the conversation: if the user has already confirmed this change in their most recent message, you may call this tool again immediately. If the user has not yet confirmed, ask them first and do not call this tool until they respond.',
-              }),
-            });
-            continue;
+          if (toolCall.name === 'update_memory' || toolCall.name === 'invalidate_memory') {
+            const memoryId = (toolCall.input as any).memoryId;
+
+            if (!sessionController.isMemoryChangeAuthorized(this.currentSessionId, memoryId)) {
+              console.log(`[Orchestrator] Guardrail: Blocked ${toolCall.name} for memory ${memoryId} — user confirmation required first`);
+              sessionController.armPendingMemoryChanges(this.currentSessionId, [memoryId]);
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolCall.id,
+                content: JSON.stringify({
+                  success: false,
+                  message: 'This tool was blocked because no prior confirmation was registered for this specific memory. Check the conversation: if the user has already confirmed this change in their most recent message, you may call this tool again immediately. If the user has not yet confirmed, ask them first and do not call this tool until they respond.',
+                }),
+              });
+              continue;
+            }
           }
 
-          // Clear pending memory change flag when a memory tool actually executes
+          // Consume the specific memory's authorization when the tool actually executes
           if (toolCall.name === 'update_memory' || toolCall.name === 'invalidate_memory') {
-            sessionController.clearPendingMemoryChange(this.currentSessionId);
+            const memoryId = (toolCall.input as any).memoryId;
+            sessionController.consumeMemoryChange(this.currentSessionId, memoryId);
           }
 
           console.log(`[Orchestrator] Executing tool: ${toolCall.name}`);
@@ -397,6 +404,18 @@ export class Orchestrator {
       return result;
     };
 
+    // set_memory_expiry: refresh session cache after setting expiry
+    const setMemoryExpiry = registry.get('set_memory_expiry')!;
+    const setMemoryExpiryBase = setMemoryExpiry.execute;
+    setMemoryExpiry.execute = async (input: any) => {
+      const result = await setMemoryExpiryBase(input);
+      if (result.success) {
+        const refreshed = await memoryAgent.getAllMemories();
+        sessionController.setSessionMemories(this.currentSessionId, refreshed);
+      }
+      return result;
+    };
+
     // invalidate_memory: refresh session cache after invalidation
     const invalidateMemory = registry.get('invalidate_memory')!;
     const invalidateMemoryBase = invalidateMemory.execute;
@@ -483,8 +502,28 @@ All workout creation goes through a two-turn confirmation flow:
     if (memories.length > 0) {
       systemPrompt += '\n## User Context\n';
 
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const twoWeeksFromNow = new Date(today);
+      twoWeeksFromNow.setDate(twoWeeksFromNow.getDate() + 14);
+
+      const expiringMemories: { memory: Memory; status: 'expired' | 'expiring_soon'; daysUntil: number }[] = [];
+
       memories.forEach((memory) => {
-        systemPrompt += `- [${memory.category.toUpperCase()}] (ID: ${memory.id}) ${memory.fact}\n`;
+        let expiryLabel = '';
+        if (memory.estimated_expiry) {
+          const expiryDate = new Date(memory.estimated_expiry);
+          const expiryStr = expiryDate.toISOString().split('T')[0];
+          expiryLabel = ` (expires: ${expiryStr})`;
+
+          const daysUntil = Math.ceil((expiryDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysUntil <= 0) {
+            expiringMemories.push({ memory, status: 'expired', daysUntil });
+          } else if (daysUntil <= 14) {
+            expiringMemories.push({ memory, status: 'expiring_soon', daysUntil });
+          }
+        }
+        systemPrompt += `- [${memory.category.toUpperCase()}] (ID: ${memory.id}) ${memory.fact}${expiryLabel}\n`;
       });
 
       systemPrompt += `
@@ -553,15 +592,72 @@ Action: Confirm, then use invalidate_memory (NOT update_memory).
   - GOOD: "Got it — sounds like your shoulder has improved. Want me to update what I have on file so I keep that in mind going forward?" (acknowledges the new info, proposes the change naturally)
   - BAD: "You mentioned you prefer mornings — are you switching to evenings?" (frames the old fact as current)
   - GOOD: "Sounds like you've moved to evening workouts — should I remember that going forward?" (leads with the new info)
+- **Multiple memory changes:** If you detect multiple changes that need confirmation, you may ask about them together in one message (e.g., "Sounds like your shoulder has healed and you've also started running more often. Should I update my notes on both?"). There is no need to ask about each one separately across multiple turns.
 - If the user confirms the change, proceed with the appropriate tool call on that turn.
-- If the user does not respond to your question and moves on to a different topic, you may proceed with the change on the next turn, but briefly mention what you did (e.g., "By the way, I've noted that your shoulder is feeling better now — let me know if that's not right.").
+- **Patience window:** If the user does not respond to your confirmation question (ignores it, changes topic, or addresses something else), wait patiently. Do NOT repeat the question on the very next turn. You have up to three turns to wait. Only after three turns of no response should you quietly proceed with the change based on your best judgment, and briefly mention what you did (e.g., "By the way, I went ahead and updated my notes about your shoulder — let me know if that's not right.").
+- **Do not nag.** Ask once, then let it go until either the user responds or three turns pass. If the user is in the middle of a different topic, do not interrupt to re-ask about the memory change.
 
 ### Choosing the Right Tool
 - **update_memory**: Use for refinements and evolution where the fact still influences future behavior — the details changed but the fact still matters (e.g., "shoulder injury" → "shoulder is sore but improving").
 - **invalidate_memory**: Use for contradictions AND resolutions — the fact is either no longer true or has been fully resolved and no longer needs to influence behavior (e.g., injury fully healed, goal achieved, preference abandoned).
 
 Use the memory ID from the User Context section above.
+
+### Setting Expiry on Memories
+
+When a new fact is stored (you'll see it appear in the User Context), determine whether it has a natural endpoint:
+
+**Facts with natural endpoints** (set an expiry):
+- Injuries and physical conditions (heal over time)
+- Goals with target dates (races, competitions, milestones)
+- Time-bound projects or commitments
+- Temporary restrictions or seasonal preferences
+
+**Facts that are likely indefinite** (leave expiry null — do not call set_memory_expiry):
+- General preferences ("like swimming", "prefer mornings")
+- Abilities and stable traits
+- Chronic or permanent conditions
+- Personality-level facts
+
+For facts with a natural endpoint, ask the user about the timeframe at a natural point in the conversation — not as an interruption to their primary request. Adapt the question to the category:
+- **Goals**: Ask for a specific date ("When is the race?")
+- **Preferences**: Ask for a window ("How long will the project keep you busy?")
+- **Constraints**: Ask gently, open-ended ("Do you have a sense of how long recovery might take?")
+
+If the user answers, use set_memory_expiry with their input.
+
+If the user ignores the question or gives an unhelpful answer, do not ask again. Wait patiently — the user has up to three turns to respond. If the user provides the timeframe in a later message (even if they're talking about something else), use set_memory_expiry with their answer. Only after three turns of no response should you fall back to estimating a reasonable expiry based on the fact text, category, and conversation context, and call set_memory_expiry with your best estimate.
+
+**The LLM always sets an expiry for facts with natural endpoints.** The conversational ask is an attempt to get better data, not a prerequisite.
+
+If the user mentions a change to a timeframe ("the race is in May, not April" or "my recovery is taking longer than expected"), use set_memory_expiry to update it directly — no confirmation needed.
 `;
+
+      // Add expiring memories check-in section if any memories are expired or expiring soon
+      if (expiringMemories.length > 0) {
+        systemPrompt += '\n## Expiring Memories — Check-In Needed\n';
+        systemPrompt += 'The following memories are expired or approaching their estimated expiry. Check in with the user about these:\n\n';
+
+        for (const { memory, status, daysUntil } of expiringMemories) {
+          const expiryStr = new Date(memory.estimated_expiry!).toISOString().split('T')[0];
+          if (status === 'expired') {
+            systemPrompt += `- [${memory.category.toUpperCase()}] (ID: ${memory.id}) "${memory.fact}" — **EXPIRED** (was estimated to expire on ${expiryStr}, ${Math.abs(daysUntil)} days ago)\n`;
+          } else {
+            systemPrompt += `- [${memory.category.toUpperCase()}] (ID: ${memory.id}) "${memory.fact}" — **EXPIRING SOON** (estimated expiry: ${expiryStr}, ${daysUntil} days away)\n`;
+          }
+        }
+
+        systemPrompt += `
+Check-in rules:
+- **Goals and preferences** approaching or past expiry: Raise proactively at the first natural opportunity in the conversation. A passed race date or expired time-bound preference should be surfaced promptly.
+- **Constraints** approaching or past expiry: Raise when relevant to the conversation (which in a fitness context is most of the time).
+- After the check-in, use existing tools based on the user's response:
+  - Still applies → extend the expiry via set_memory_expiry
+  - Fully resolved → retire via invalidate_memory
+  - Changed details → update via update_memory
+- Weave the check-in naturally — e.g., "By the way, your half-marathon was coming up — how did it go?" or "Last I knew, your ankle was on the mend. How's it feeling these days?"
+`;
+      }
     }
 
     // Pass detected refinements to the LLM as signals that need confirmation

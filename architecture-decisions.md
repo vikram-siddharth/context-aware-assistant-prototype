@@ -229,21 +229,73 @@ The Orchestrator recognizes three categories of memory changes:
 
 ---
 
+## Decision 14: Persistence-Based Memory Expiry (Enhancement)
+
+**Context:** Memories have a `persistence` label (permanent / long_term / short_term) but no mechanism for expiry. Outdated facts remain active indefinitely unless the user explicitly contradicts them in conversation.
+
+**Decision:** Add an `estimated_expiry` date (nullable) to the memories table and a `set_memory_expiry` tool (registered by the Memory Agent). Permanent memories get null expiry. For memories with a shelf life, the Orchestrator estimates expiry conversationally.
+
+**Shelf-life determination:** When a new fact is mentioned, the Orchestrator determines whether it has a natural endpoint (injuries heal, projects end, races have a date). If the fact is likely indefinite (preferences, abilities, stable conditions), expiry stays null. This is a binary judgment, not a confidence score.
+
+**Estimation approach:** For facts with a natural endpoint, the Orchestrator asks the user once, at a natural point in conversation — not as an interruption. The phrasing adapts to the category:
+
+- **Goals:** Ask for a specific date ("When is the race?")
+- **Preferences:** Ask for a window ("How long will the project keep you busy?")
+- **Constraints:** Ask for whatever the user knows ("Do you have a sense of how long recovery might take?"), then the LLM estimates from that
+
+**Fallback:** If the user ignores the question or gives an unhelpful answer, the Orchestrator does not ask again. It estimates a reasonable expiry on its own using the fact text, category, and conversation context, and calls `set_memory_expiry` with its best guess. The LLM always sets an expiry for facts with natural endpoints — the conversational ask is an attempt to get better data, not a prerequisite.
+
+**User-initiated expiry updates:** If the user mentions a change to a timeframe ("the race is in May, not April" or "my recovery is taking longer than expected"), the Orchestrator uses `set_memory_expiry` to update it. No special flow — handled like any other conversational memory change.
+
+**Extraction is unchanged.** Memory extraction still runs asynchronously in the background. Expiry estimation is a separate conversational step in the Orchestrator's normal flow. The extraction may write the memory with a null expiry, which the Orchestrator fills in after the user answers or via the fallback estimate.
+
+**Check-in behavior:** At session start, memories that are expired or expiring within two weeks are noted in the system prompt. The Orchestrator asks about them:
+
+- **Goals and preferences:** Proactively, at the first natural opportunity. A passed race date or expired time-bound preference should be surfaced promptly.
+- **Constraints:** When relevant to the conversation, which in a fitness context is most of the time.
+
+**After check-in:** Three outcomes, all handled by existing tools: the user confirms the fact still applies (Orchestrator extends or clears the expiry), the user says it's resolved (invalidate), or the user gives updated information (update).
+
+**Expired memories remain active** until a user invalidates them. Better to over-constrain than to silently drop a real constraint because the LLM's estimate was off.
+
+**Memory inspection UI update:** Memories ordered by expiry date (soonest first, permanent at the bottom). Memories within the two-week threshold are visually highlighted.
+
+**Tradeoff:** The conversational approach to expiry estimation adds overhead — the Orchestrator needs to find natural moments to ask about timeframes without derailing the primary conversation. But it produces much better estimates than silent LLM guessing, especially for goals and preferences where the user has precise information.
+
+---
+
+## Decision 15: Memory-ID-Specific Confirmation Guardrail with Turn-Based Expiry (Enhancement)
+
+**Context:** When multiple memory changes arise in a single interaction, the Orchestrator batches all confirmation questions into one message and treats the user's next turn as their only chance to respond. This is unnatural — users may want to address each question in a separate message. It also means unanswered questions immediately fall through to the fallback behavior, giving the user no real opportunity to respond.
+
+The underlying cause was the session-level flag gating memory mutations. It had no concept of individual memories or patience across turns — once armed, it authorized any memory change, and once the next turn passed, unanswered confirmations were treated as ignored.
+
+**Decision:** Replace the session-level flag with per-memory-ID tracking and a 3-turn patience window.
+
+- `pendingMemoryChanges` becomes a `Map` keyed by memory ID, each entry recording the proposed change and the turn it was armed. Arming for memory A does not authorize changes to memory B.
+- When a memory tool executes, only that memory's authorization is consumed. Other authorized memories remain available in the same agentic loop.
+- At the start of each `processMessage`, entries older than 3 turns are expired. This prevents stale authorizations from accumulating while giving the user adequate time to respond across multiple messages.
+- The system prompt instructs the LLM to ask once, then wait up to 3 turns before proceeding silently. No nagging — if the user hasn't responded after 3 turns, the Orchestrator falls back per Decision 7 (proceed and inform for memory changes) or Decision 14 (estimate on its own for expiry).
+
+The two arming paths (extraction pre-arm and inference block-then-retry) are preserved with the same semantics, scoped to specific memory IDs instead of the session.
+
+**Tradeoff:** Per-memory-ID tracking adds complexity to session state, but eliminates cross-contamination between unrelated memory changes and makes multi-question conversations feel natural.
+
+---
+
 ## Appendix: Production Enhancements (Deferred)
 
 These enhancements were discussed during development and deemed valuable for production but out of scope for the prototype:
 
-1. **Persistence-based memory expiry:** Estimate a rough expiry date for each memory at extraction time (via LLM judgment or user input). Near expiry, proactively ask the user if the fact is still relevant. Would require careful UX design to avoid feeling intrusive, and interacts with the existing confirmation flow.
+1. **Word-by-word response streaming:** Stream the final LLM response token-by-token rather than as a single complete event. Improves perceived latency for longer responses.
 
-2. **Word-by-word response streaming:** Stream the final LLM response token-by-token rather than as a single complete event. Improves perceived latency for longer responses.
+2. **Memory confidence scoring:** Assign and display a confidence level for each extracted memory. Mentioned in the spec as extra credit.
 
-3. **Memory confidence scoring:** Assign and display a confidence level for each extracted memory. Mentioned in the spec as extra credit.
+3. **Personality-aware reasoning tone:** Let the user choose a personality style and have the reasoning steps adapt accordingly.
 
-4. **Personality-aware reasoning tone:** Let the user choose a personality style and have the reasoning steps adapt accordingly.
+4. **Embedding-based memory retrieval:** Replace LLM-based relevance scoring with vector similarity search for faster, more scalable memory retrieval.
 
-5. **Embedding-based memory retrieval:** Replace LLM-based relevance scoring with vector similarity search for faster, more scalable memory retrieval.
-
-6. **Transaction handling for tool execution:** The Orchestrator's tool execution loop is not wrapped in a database transaction. If the loop calls multiple tools and one fails partway through, earlier writes are not rolled back. For the workout domain the consequence is minor (a duplicate workout at worst), but in higher-stakes domains (financial transactions, multi-step bookings), you'd want the entire tool execution sequence to be atomic — all operations succeed or all are rolled back.
+5. **Transaction handling for tool execution:** The Orchestrator's tool execution loop is not wrapped in a database transaction. If the loop calls multiple tools and one fails partway through, earlier writes are not rolled back. For the workout domain the consequence is minor (a duplicate workout at worst), but in higher-stakes domains (financial transactions, multi-step bookings), you'd want the entire tool execution sequence to be atomic — all operations succeed or all are rolled back.
 
 ---
 

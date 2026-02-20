@@ -95,6 +95,39 @@ export class MemoryAgent implements ToolProvider {
         },
       },
       {
+        name: 'set_memory_expiry',
+        description:
+          'Set or update the estimated expiry date for a memory that has a natural endpoint (injuries heal, projects end, races have a date). Call this after the user provides a timeframe or when estimating a reasonable expiry for a fact with a natural endpoint.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            memoryId: {
+              type: 'string',
+              description: 'The ID of the memory to set expiry for (from the User Context section)',
+            },
+            date: {
+              type: 'string',
+              description: 'The estimated expiry date in YYYY-MM-DD format',
+            },
+          },
+          required: ['memoryId', 'date'],
+        },
+        actionDescription: 'Updating my notes...',
+        execute: async (input: { memoryId: string; date: string }) => {
+          const expiryDate = new Date(input.date);
+          if (isNaN(expiryDate.getTime())) {
+            return { success: false, message: 'Invalid date format. Use YYYY-MM-DD.' };
+          }
+          const updated = await this.setMemoryExpiry(input.memoryId, expiryDate);
+          return {
+            success: updated,
+            message: updated
+              ? `Memory expiry set to ${input.date}`
+              : 'Memory not found or could not be updated',
+          };
+        },
+      },
+      {
         name: 'invalidate_memory',
         description:
           'Retire an outdated memory when the user indicates a previously stored fact is no longer true. For example, if the user said they had a knee injury but now says it has healed, use this tool to retire the old constraint. Always inform the user when you do this.',
@@ -313,6 +346,24 @@ ${existingFactsList || '(none)'}
       return success;
     } catch (error) {
       console.error('[MemoryAgent] Error in updateMemoryFact:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Set or update the estimated expiry date for a memory.
+   * Used for facts with natural endpoints (injuries, goals with dates, temporary preferences).
+   */
+  async setMemoryExpiry(id: string, expiryDate: Date): Promise<boolean> {
+    try {
+      const result = await this.memoryRepository.update(id, { estimated_expiry: expiryDate });
+      const success = (result.affected ?? 0) > 0;
+      if (success) {
+        console.log(`[MemoryAgent] Set expiry for memory ${id}: ${expiryDate.toISOString().split('T')[0]}`);
+      }
+      return success;
+    } catch (error) {
+      console.error('[MemoryAgent] Error in setMemoryExpiry:', error);
       return false;
     }
   }
