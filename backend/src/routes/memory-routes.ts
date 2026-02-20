@@ -18,6 +18,7 @@ router.get('/', async (req: Request, res: Response) => {
         fact: m.fact,
         category: m.category,
         persistence: m.persistence,
+        estimated_expiry: m.estimated_expiry,
         created_at: m.created_at,
       })),
     });

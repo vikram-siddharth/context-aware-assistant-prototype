@@ -209,7 +209,7 @@
   border: 1px solid #333;
   border-radius: 12px;
   width: 90%;
-  max-width: 560px;
+  max-width: 680px;
   max-height: 80vh;
   display: flex;
   flex-direction: column;
@@ -259,31 +259,67 @@
   color: #f87171;
 }
 
-.memory-modal__list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.memory-modal__item {
-  padding: 0.75rem 0;
-  border-bottom: 1px solid #2a2a3d;
-}
-
-.memory-modal__item:last-child {
+.memory-modal__group-heading {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.6rem 0.5rem 0.25rem;
   border-bottom: none;
 }
 
-.memory-modal__fact {
-  margin: 0 0 0.4rem;
+.memory-modal__group-heading--goal {
+  color: #34d399;
+}
+
+.memory-modal__group-heading--preference {
+  color: #60a5fa;
+}
+
+.memory-modal__group-heading--constraint {
+  color: #f87171;
+}
+
+.memory-modal__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.memory-modal__th {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #666;
+  text-align: left;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid #2a2a3d;
+  white-space: nowrap;
+}
+
+.memory-modal__td {
+  padding: 0.5rem 0.5rem;
+  border-bottom: 1px solid #2a2a3d;
+  font-size: 0.85rem;
+  vertical-align: top;
+}
+
+.memory-modal__td--fact {
   line-height: 1.5;
 }
 
-.memory-modal__meta {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
+.memory-modal__td--expiry {
+  color: #888;
+  white-space: nowrap;
+}
+
+.memory-modal__td--date {
+  color: #666;
+  white-space: nowrap;
+}
+
+.memory-modal__table tbody tr:last-child .memory-modal__td {
+  border-bottom: none;
 }
 
 .memory-modal__badge {
@@ -293,21 +329,7 @@
   letter-spacing: 0.04em;
   padding: 0.15rem 0.45rem;
   border-radius: 4px;
-}
-
-.memory-modal__badge--constraint {
-  background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
-}
-
-.memory-modal__badge--preference {
-  background: rgba(96, 165, 250, 0.15);
-  color: #60a5fa;
-}
-
-.memory-modal__badge--goal {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
+  white-space: nowrap;
 }
 
 .memory-modal__badge--persistence {
@@ -315,10 +337,32 @@
   color: #999;
 }
 
-.memory-modal__date {
-  font-size: 0.75rem;
-  color: #666;
-  margin-left: auto;
+/* Expired row highlight */
+.memory-modal__row--expired {
+  background: rgba(248, 113, 113, 0.06);
+}
+
+.memory-modal__row--expired > .memory-modal__td:first-child {
+  box-shadow: inset 3px 0 0 #f87171;
+}
+
+.memory-modal__td--expired {
+  color: #f87171;
+  font-weight: 600;
+}
+
+/* Expiring-soon row highlight */
+.memory-modal__row--expiring-soon {
+  background: rgba(251, 191, 36, 0.06);
+}
+
+.memory-modal__row--expiring-soon > .memory-modal__td:first-child {
+  box-shadow: inset 3px 0 0 #fbbf24;
+}
+
+.memory-modal__td--expiring-soon {
+  color: #fbbf24;
+  font-weight: 600;
 }
 
 /* Light mode */
@@ -353,7 +397,8 @@
     border-bottom-color: #ddd;
   }
 
-  .memory-modal__item {
+  .memory-modal__th,
+  .memory-modal__td {
     border-bottom-color: #eee;
   }
 

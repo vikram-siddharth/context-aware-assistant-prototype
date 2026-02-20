@@ -108,11 +108,12 @@ async function main() {
     assert('fact' in firstMemory, 'Memory has fact field');
     assert('category' in firstMemory, 'Memory has category field');
     assert('persistence' in firstMemory, 'Memory has persistence field');
+    assert('estimated_expiry' in firstMemory, 'Memory has estimated_expiry field');
     assert('created_at' in firstMemory, 'Memory has created_at field');
 
     // Verify no extra fields leak (e.g., active flag should not be exposed)
     const fieldCount = Object.keys(firstMemory).length;
-    assert(fieldCount === 5, `Memory has exactly 5 fields (got ${fieldCount})`);
+    assert(fieldCount === 6, `Memory has exactly 6 fields (got ${fieldCount})`);
     assert(!('active' in firstMemory), 'active flag is NOT exposed in response');
     console.log();
 
@@ -173,6 +174,40 @@ async function main() {
     const dateStr = body3.memories[0].created_at;
     const parsed = new Date(dateStr);
     assert(!isNaN(parsed.getTime()), `created_at parses to valid Date (value: ${dateStr})`);
+    console.log();
+
+    // ==================================================================
+    // TEST 7: estimated_expiry round-trip (set date vs null)
+    // ==================================================================
+    console.log('--- Test 7: estimated_expiry round-trip ---');
+
+    const expiryDate = new Date('2026-06-15');
+    const m4 = memoryRepo.create({
+      fact: 'recovering from shoulder surgery',
+      category: MemoryCategory.CONSTRAINT,
+      persistence: MemoryPersistence.LONG_TERM,
+      active: true,
+      estimated_expiry: expiryDate,
+    });
+    const saved4 = await memoryRepo.save(m4);
+    createdIds.push(saved4.id);
+
+    const res7 = await fetch(`${BASE_URL}/api/memories`);
+    const body7 = await res7.json();
+
+    const shoulderMemory = body7.memories.find((m: any) => m.fact === 'recovering from shoulder surgery');
+    const swimMemory7 = body7.memories.find((m: any) => m.fact === 'like swimming');
+
+    assert(shoulderMemory !== undefined, 'Memory with expiry exists in response');
+    assert(shoulderMemory.estimated_expiry !== null, 'estimated_expiry is not null for memory with expiry set');
+    const parsedExpiry = new Date(shoulderMemory.estimated_expiry);
+    assert(!isNaN(parsedExpiry.getTime()), `estimated_expiry parses to valid Date (value: ${shoulderMemory.estimated_expiry})`);
+    assert(
+      parsedExpiry.toISOString().startsWith('2026-06-15'),
+      `estimated_expiry matches set date (got ${parsedExpiry.toISOString()})`,
+    );
+
+    assert(swimMemory7.estimated_expiry === null, `Memory without expiry returns null (got ${swimMemory7.estimated_expiry})`);
     console.log();
 
     // ==================================================================
