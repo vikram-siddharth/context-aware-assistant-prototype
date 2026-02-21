@@ -38,7 +38,7 @@ function fakeMemory(overrides: Partial<Memory> = {}): Memory {
   m.id = overrides.id || 'fake-uuid-1234';
   m.fact = overrides.fact || 'Has a knee injury';
   m.category = overrides.category || MemoryCategory.CONSTRAINT;
-  m.persistence = overrides.persistence || MemoryPersistence.LONG_TERM;
+  m.persistence = overrides.persistence || MemoryPersistence.TEMPORARY;
   m.active = overrides.active ?? true;
   m.created_at = overrides.created_at || new Date();
   return m;

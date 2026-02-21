@@ -13,12 +13,6 @@ const CATEGORY_LABELS: Record<MemoryData['category'], string> = {
   goal: 'Goal',
 };
 
-const PERSISTENCE_LABELS: Record<MemoryData['persistence'], string> = {
-  permanent: 'Permanent',
-  long_term: 'Long-term',
-  short_term: 'Short-term',
-};
-
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, {
     year: 'numeric',
@@ -97,7 +91,6 @@ export default function MemoryModal({ open, onClose }: Props) {
               <thead>
                 <tr>
                   <th className="memory-modal__th">Fact</th>
-                  <th className="memory-modal__th">Persistence</th>
                   <th className="memory-modal__th">Expires</th>
                   <th className="memory-modal__th">Created</th>
                 </tr>
@@ -107,7 +100,7 @@ export default function MemoryModal({ open, onClose }: Props) {
                   <Fragment key={group.category}>
                     <tr>
                       <td
-                        colSpan={4}
+                        colSpan={3}
                         className={`memory-modal__group-heading memory-modal__group-heading--${group.category}`}
                       >
                         {CATEGORY_LABELS[group.category]}s
@@ -121,11 +114,6 @@ export default function MemoryModal({ open, onClose }: Props) {
                           className={expiryStatus !== 'normal' ? `memory-modal__row--${expiryStatus}` : undefined}
                         >
                           <td className="memory-modal__td memory-modal__td--fact">{m.fact}</td>
-                          <td className="memory-modal__td">
-                            <span className="memory-modal__badge memory-modal__badge--persistence">
-                              {PERSISTENCE_LABELS[m.persistence]}
-                            </span>
-                          </td>
                           <td className={`memory-modal__td memory-modal__td--expiry${expiryStatus !== 'normal' ? ` memory-modal__td--${expiryStatus}` : ''}`}>
                             {m.estimated_expiry ? formatDate(m.estimated_expiry) : 'No expiry'}
                           </td>

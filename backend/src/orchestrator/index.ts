@@ -677,7 +677,7 @@ Check-in rules:
       }
 
       if (needExpiry.length > 0) {
-        systemPrompt += '\nThe memories marked short_term or long_term have natural endpoints. For each one, follow the expiry-setting flow described in "Setting Expiry on Memories" above — ask the user about the timeframe at a natural point in this conversation.\n';
+        systemPrompt += '\nThe memories marked temporary have natural endpoints. For each one, follow the expiry-setting flow described in "Setting Expiry on Memories" above — ask the user about the timeframe at a natural point in this conversation.\n';
       }
     }
 

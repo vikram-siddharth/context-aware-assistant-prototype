@@ -59,7 +59,7 @@ Postgres (TypeORM)
 id, type, duration, date, description (nullable), status (scheduled/completed/cancelled), created_at, updated_at
 
 ### Memory (persistent memory)
-id, fact, category (constraint/preference/goal), persistence (permanent/long_term/short_term), active (boolean, default true), estimated_expiry (date, nullable, default null), created_at
+id, fact, category (constraint/preference/goal), persistence (permanent/temporary), active (boolean, default true), estimated_expiry (date, nullable, default null), created_at
 
 ## Implementation Notes
 

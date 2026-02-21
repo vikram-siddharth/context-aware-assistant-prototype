@@ -13,8 +13,7 @@ export enum MemoryCategory {
 
 export enum MemoryPersistence {
   PERMANENT = 'permanent',
-  LONG_TERM = 'long_term',
-  SHORT_TERM = 'short_term',
+  TEMPORARY = 'temporary',
 }
 
 @Entity('memories')

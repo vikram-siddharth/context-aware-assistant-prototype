@@ -51,7 +51,7 @@ async function testEstimatedExpiry() {
     const memory = memoryRepository.create({
       fact: 'test fact for expiry column',
       category: MemoryCategory.PREFERENCE,
-      persistence: MemoryPersistence.LONG_TERM,
+      persistence: MemoryPersistence.TEMPORARY,
     });
     const saved = await memoryRepository.save(memory);
     console.log('  Saved memory ID:', saved.id);

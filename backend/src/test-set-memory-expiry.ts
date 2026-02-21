@@ -44,7 +44,7 @@ async function createTestMemory(): Promise<Memory> {
   const memory = repo.create({
     fact: 'have a sprained ankle',
     category: MemoryCategory.CONSTRAINT,
-    persistence: MemoryPersistence.LONG_TERM,
+    persistence: MemoryPersistence.TEMPORARY,
   });
   const saved = await repo.save(memory);
   createdMemoryIds.push(saved.id);

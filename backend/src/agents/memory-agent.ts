@@ -29,8 +29,8 @@ const ExtractionSchema = z.object({
       category: z.enum(['constraint', 'preference', 'goal']).describe(
         'constraint: hard requirements (e.g., injury, allergy), preference: soft choices (e.g., likes/dislikes), goal: objectives to work toward'
       ),
-      persistence: z.enum(['permanent', 'long_term', 'short_term']).describe(
-        'permanent: indefinite (e.g., chronic condition), long_term: months/years, short_term: weeks'
+      persistence: z.enum(['permanent', 'temporary']).describe(
+        'permanent: indefinite (e.g., chronic condition, stable trait), temporary: has a natural endpoint (e.g., injury, time-bound goal)'
       ),
     })
   ),
@@ -196,9 +196,8 @@ Categories:
 - goal: Objectives or targets the user is working toward
 
 Persistence levels:
-- permanent: Indefinite facts (chronic conditions, allergies, fundamental traits)
-- long_term: Months to years (fitness goals, ongoing preferences)
-- short_term: Weeks (temporary restrictions, short-term objectives)
+- permanent: Indefinite facts (chronic conditions, allergies, fundamental traits, stable preferences)
+- temporary: Facts with a natural endpoint (injuries, time-bound goals, temporary restrictions)
 
 FACT FORMAT:
 - Store each fact as a second-person verb phrase (as if completing "You ...").

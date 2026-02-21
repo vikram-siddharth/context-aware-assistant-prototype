@@ -332,11 +332,6 @@
   white-space: nowrap;
 }
 
-.memory-modal__badge--persistence {
-  background: rgba(255, 255, 255, 0.08);
-  color: #999;
-}
-
 /* Expired row highlight */
 .memory-modal__row--expired {
   background: rgba(248, 113, 113, 0.06);

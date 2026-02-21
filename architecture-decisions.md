@@ -32,7 +32,7 @@ This document captures key design decisions, tradeoffs, and reasoning as we buil
 - `id` (primary key)
 - `fact` (the raw extracted text)
 - `category` (constraint / preference / goal)
-- `persistence` (permanent / long_term / short_term — estimated by the LLM during extraction)
+- `persistence` (permanent / temporary — estimated by the LLM during extraction)
 - `active` (boolean, default true — supports memory invalidation)
 - `created_at`
 
@@ -40,7 +40,7 @@ This document captures key design decisions, tradeoffs, and reasoning as we buil
 - *Expiry date estimation:* We discussed having the LLM estimate a rough expiry date (e.g., a knee injury might heal in months, a heart condition might be permanent). We also discussed having the assistant ask the user about persistence when a fact is first mentioned, or check if a condition still persists when it's retrieved near its estimated expiry. Deferred as a production enhancement (see Appendix).
 - *Confidence scoring:* The spec mentions this as extra credit. Deferred for now.
 
-**Tradeoff:** The `persistence` label is coarse but sufficient. In production, a richer model with dates and user confirmation would improve accuracy.
+**Tradeoff:** The `persistence` label is a binary signal (permanent vs. temporary) used to trigger the expiry-setting flow for non-permanent memories. The `estimated_expiry` date (Decision 14) is the actual source of truth for temporality.
 
 ---
 
@@ -216,7 +216,7 @@ The Orchestrator recognizes three categories of memory changes:
 
 **Context:** Users have no way to see what the system remembers about them. Memories are only visible when the Orchestrator surfaces them in reasoning events during conversation.
 
-**Decision:** Add a read-only panel that displays all active memories with their metadata (fact, category, persistence, created date). Inactive memories are excluded — the panel answers "what does the system remember about me right now," not "what has the system ever known." No edit, delete, or deactivate controls — all memory changes are handled conversationally through the Orchestrator (invalidation via Decision 7, updates via Decision 8).
+**Decision:** Add a read-only panel that displays all active memories with their metadata (fact, category, expiry date, created date). Inactive memories are excluded — the panel answers "what does the system remember about me right now," not "what has the system ever known." No edit, delete, or deactivate controls — all memory changes are handled conversationally through the Orchestrator (invalidation via Decision 7, updates via Decision 8).
 
 - **Backend:** A single `GET /api/memories` endpoint that returns active memories. This bypasses the Orchestrator — it's direct read access to the memories table.
 - **Frontend:** A panel accessible from the chat interface (sidebar, modal, or toggle — implementation detail).
@@ -231,7 +231,7 @@ The Orchestrator recognizes three categories of memory changes:
 
 ## Decision 14: Persistence-Based Memory Expiry (Enhancement)
 
-**Context:** Memories have a `persistence` label (permanent / long_term / short_term) but no mechanism for expiry. Outdated facts remain active indefinitely unless the user explicitly contradicts them in conversation.
+**Context:** Memories have a `persistence` label (permanent / temporary) but no mechanism for expiry. Outdated facts remain active indefinitely unless the user explicitly contradicts them in conversation.
 
 **Decision:** Add an `estimated_expiry` date (nullable) to the memories table and a `set_memory_expiry` tool (registered by the Memory Agent). Permanent memories get null expiry. For memories with a shelf life, the Orchestrator estimates expiry conversationally.
 

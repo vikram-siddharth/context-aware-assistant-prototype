@@ -7,7 +7,6 @@ export type MemoryData = {
   id: string;
   fact: string;
   category: 'constraint' | 'preference' | 'goal';
-  persistence: 'permanent' | 'long_term' | 'short_term';
   estimated_expiry: string | null;
   created_at: string;
 };

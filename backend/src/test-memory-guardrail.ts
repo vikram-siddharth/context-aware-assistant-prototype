@@ -50,7 +50,7 @@ async function createTestMemory(fact: string, category: MemoryCategory = MemoryC
   const memory = repo.create({
     fact,
     category,
-    persistence: MemoryPersistence.LONG_TERM,
+    persistence: MemoryPersistence.TEMPORARY,
     active: true,
   });
   return repo.save(memory);

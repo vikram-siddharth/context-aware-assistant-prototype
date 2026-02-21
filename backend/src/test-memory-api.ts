@@ -81,7 +81,7 @@ async function main() {
     const m1 = memoryRepo.create({
       fact: 'have a knee injury',
       category: MemoryCategory.CONSTRAINT,
-      persistence: MemoryPersistence.LONG_TERM,
+      persistence: MemoryPersistence.TEMPORARY,
       active: true,
     });
     const saved1 = await memoryRepo.save(m1);
@@ -125,7 +125,7 @@ async function main() {
     const m3 = memoryRepo.create({
       fact: 'want to run a marathon',
       category: MemoryCategory.GOAL,
-      persistence: MemoryPersistence.LONG_TERM,
+      persistence: MemoryPersistence.TEMPORARY,
       active: false, // Inactive — should NOT appear
     });
     const saved3 = await memoryRepo.save(m3);
@@ -151,7 +151,7 @@ async function main() {
     const swimMemory = body3.memories.find((m: any) => m.fact === 'like swimming');
 
     assert(kneeMemory.category === 'constraint', `Knee injury category is constraint (got ${kneeMemory.category})`);
-    assert(kneeMemory.persistence === 'long_term', `Knee injury persistence is long_term (got ${kneeMemory.persistence})`);
+    assert(kneeMemory.persistence === 'temporary', `Knee injury persistence is temporary (got ${kneeMemory.persistence})`);
     assert(swimMemory.category === 'preference', `Swimming category is preference (got ${swimMemory.category})`);
     assert(swimMemory.persistence === 'permanent', `Swimming persistence is permanent (got ${swimMemory.persistence})`);
     console.log();
@@ -185,7 +185,7 @@ async function main() {
     const m4 = memoryRepo.create({
       fact: 'recovering from shoulder surgery',
       category: MemoryCategory.CONSTRAINT,
-      persistence: MemoryPersistence.LONG_TERM,
+      persistence: MemoryPersistence.TEMPORARY,
       active: true,
       estimated_expiry: expiryDate,
     });
