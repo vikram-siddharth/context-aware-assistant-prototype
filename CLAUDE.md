@@ -89,7 +89,7 @@ id, fact, category (constraint/preference/goal), persistence (permanent/long_ter
 - System prompt includes "Session Intent vs. Durable Facts" section with linguistic test (conditional mood = session intent, indicative mood = durable fact)
 - System prompt includes "Workout Planning Flow" section describing the two-turn confirmation flow (create_plan → confirm_proposal)
 - System prompt includes "Pending Workout Proposal" section (conditional) when a proposal exists, with instructions for confirm/modify/reject
-- System prompt includes "Setting Expiry on Memories" section instructing the LLM to determine if new facts have natural endpoints, ask the user about timeframe conversationally, and fall back to estimation if the user doesn't answer
+- System prompt includes "Setting Expiry on Memories" section instructing the LLM to determine if new facts have natural endpoints, ask the user about timeframe conversationally, and fall back to estimation if the user doesn't answer. Also instructs the LLM to call `set_memory_expiry` alongside `update_memory` when the updated fact includes temporal information, and to distinguish between specific date corrections (apply directly) and vague timeline changes (ask for clarification first)
 - System prompt includes "Expiring Memories — Check-In Needed" section (conditional) when memories are expired or within 2 weeks of expiry, with category-specific check-in rules (goals/preferences: proactive; constraints: when relevant)
 - Memory context listing now includes expiry dates inline for memories that have them (e.g., `(expires: 2026-03-15)`)
 - `set_memory_expiry` does NOT require the two-turn confirmation guardrail — it can be called directly since it only sets a date, not changing the substance of a fact

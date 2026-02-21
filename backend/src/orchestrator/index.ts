@@ -631,7 +631,9 @@ If the user ignores the question or gives an unhelpful answer, do not ask again.
 
 **The LLM always sets an expiry for facts with natural endpoints.** The conversational ask is an attempt to get better data, not a prerequisite.
 
-If the user mentions a change to a timeframe ("the race is in May, not April" or "my recovery is taking longer than expected"), use set_memory_expiry to update it directly — no confirmation needed.
+If the user provides a specific date correction ("the race is in May, not April"), use set_memory_expiry to update it directly — no confirmation needed. If the user mentions a vague timeline change ("my recovery is taking longer than expected"), ask for clarification on the new timeframe before calling set_memory_expiry.
+
+**Expiry applies to updates too.** When you use update_memory and the new fact includes temporal information (a date, deadline, or timeframe), also call set_memory_expiry to capture that date. The fact text and the estimated_expiry field serve different purposes — the fact describes what is true, the expiry date drives check-in behavior. Both should be populated.
 `;
 
       // Add expiring memories check-in section if any memories are expired or expiring soon
