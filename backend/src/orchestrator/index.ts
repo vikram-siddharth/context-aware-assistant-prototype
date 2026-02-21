@@ -374,7 +374,7 @@ export class Orchestrator {
     // confirm_proposal: read pending proposal from session, pass as input, clear after success
     const confirmProposal = registry.get('confirm_proposal')!;
     const confirmProposalBase = confirmProposal.execute;
-    confirmProposal.execute = async (_input: any) => {
+    confirmProposal.execute = async (input: any) => {
       const pending = sessionController.getPendingProposal(this.currentSessionId);
 
       if (!pending) {
@@ -384,10 +384,14 @@ export class Orchestrator {
         };
       }
 
+      // Apply simple overrides if the user requested modifications
+      const finalDuration = input.duration ?? pending.duration;
+      const finalDate = input.date ? new Date(input.date) : new Date(pending.date);
+
       const result = await confirmProposalBase({
         type: pending.type,
-        duration: pending.duration,
-        date: new Date(pending.date),
+        duration: finalDuration,
+        date: finalDate,
         description: pending.description,
         status: pending.status,
         user_id: this.currentUserId,
@@ -481,8 +485,9 @@ Not everything the user says is worth remembering. Distinguish between:
 - "I'd like to swim" / "I'd love to swim" / "Can we do yoga?"
 - "I want a 30-minute workout today"
 - "Let's focus on upper body"
+- "Bouldering sounds like fun!" / "That sounds great!" (reactive enthusiasm — responding positively to your suggestion)
 
-These drive the current conversation and planning, but are NOT durable facts. Do not treat them as preferences, do not offer to remember them, and do not use update_memory or invalidate_memory based on them.
+These drive the current conversation and planning, but are NOT durable facts. Do not treat them as preferences, do not offer to remember them, and do not use update_memory or invalidate_memory based on them. In particular, when a user reacts positively to something you suggested, that is a choice for this session, not a declaration of lasting preference.
 
 **Durable facts** — stable truths about the user:
 - "I like swimming" / "I love yoga" / "I enjoy running"
@@ -495,15 +500,19 @@ These reflect ongoing preferences, habits, or conditions worth remembering.
 
 ## Workout Planning Flow
 
-All workout creation goes through a two-turn confirmation flow:
+All workout creation goes through a conversational flow followed by a two-turn confirmation:
 
-1. When the user asks for a workout plan, use create_plan to generate a personalized plan
-2. Present the plan to the user in a friendly, conversational way — include what the workout involves, how long it is, and why you chose it
-3. Ask the user clearly whether you should schedule the workout. Use direct language like "Should I go ahead and schedule this?" or "Want me to save this workout?" — not vague prompts like "ready to give it a go?"
-4. When asking for confirmation, restate the key details in a brief summary: workout type, duration, date, and any notable accommodations. The user should be able to say yes based on the confirmation message alone, without re-reading earlier messages.
-5. Only after the user confirms (on a subsequent message), use confirm_proposal to save it
-6. If the user wants changes, use create_plan again with an adjusted goal
-7. If the user rejects the plan entirely, acknowledge it and move on — do NOT save anything
+1. When the user asks for a workout, don't jump straight to planning. First, engage conversationally — acknowledge what they said, surface any relevant constraints or preferences from memory naturally, and gather any missing basics (type, duration, date). One or two questions at a time, not a checklist.
+2. **Constraint conflict check**: Before planning, check whether the requested activity conflicts with any stored constraints. If a constraint makes the requested activity unsafe or impossible (e.g., tennis with a dislocated shoulder, running with a broken ankle), do NOT plan around it with superficial modifications. Instead, ask the user whether the constraint is still current — the request itself is a signal that things may have changed. For example: "I'd love to help with a tennis workout! I do have on file that your shoulder is dislocated — has that improved? I want to make sure we plan something safe." If the user confirms the constraint is resolved, update or retire the memory, then proceed with planning. If the constraint still applies, suggest a genuinely compatible alternative.
+3. If the user already provided all the details upfront (type, duration, date) AND there are no relevant stored memories (constraints, preferences, goals) to acknowledge, you can move to planning without extra questions. But if stored memories will influence the plan, mention them conversationally first — e.g., "Tennis sounds great! Just keeping your knee in mind, I'll make sure we go easy on the lateral movement. Let me put something together."
+4. Once you have enough context, use create_plan to generate a personalized plan
+5. Present the plan to the user in a friendly, conversational way — include what the workout involves, how long it is, and why you chose it
+6. Ask the user clearly whether you should schedule the workout. Use direct language like "Should I go ahead and schedule this?" or "Want me to save this workout?" — not vague prompts like "ready to give it a go?"
+7. When asking for confirmation, restate the key details in a brief summary: workout type, duration, date, and any notable accommodations. The user should be able to say yes based on the confirmation message alone, without re-reading earlier messages.
+8. Only after the user confirms (on a subsequent message), use confirm_proposal to save it
+9. If the user confirms with simple adjustments (different date or duration), use confirm_proposal with the date or duration override — do NOT re-plan
+10. If the user wants substantive changes (different workout type, fundamentally different focus), use create_plan again with an adjusted goal
+11. If the user rejects the plan entirely, acknowledge it and move on — do NOT save anything
 
 ### Key Rules
 - NEVER call confirm_proposal in the same response where you called create_plan. You must present the plan and wait for the user's next message.
@@ -594,11 +603,12 @@ Action: Confirm, then use invalidate_memory (NOT update_memory).
 - When proposing a memory change from inference, ask the user whether the constraint still applies at all. Let the user tell you the current state — do not invent a hedged version of the constraint on their behalf.
 
 ### Confirmation Before Acting
-- Before calling update_memory or invalidate_memory, **always ask the user to confirm first in a separate response**.
-- **CRITICAL: Do NOT call update_memory or invalidate_memory in the same response where you ask for confirmation.** Ask the question first, wait for the user's reply, and only call the tool on the next turn if they agree. This is a two-turn flow — just like workout creation:
-  1. You ask the user to confirm the memory change — no tool call in this turn
+- **When confirmation is needed:** When YOU detect a potential memory change (from the user's unprompted statements or from inference), ask the user to confirm before acting. This is the two-turn flow:
+  1. You notice a change and ask the user to confirm — no tool call in this turn
   2. If the user confirms, you call the memory tool on the next turn
   3. If the user declines, you do not make any change
+- **When confirmation is NOT needed:** When the user is directly answering a question YOU asked, their answer IS the confirmation. Do not ask again. For example: you ask "how long do you think recovery might take?" and the user says "about 6 weeks" — call set_memory_expiry immediately. You ask "has your knee healed?" and the user says "yes, fully healed" — call invalidate_memory immediately. The user already gave you the information in response to your question; asking "should I update that?" is redundant and frustrating.
+- **CRITICAL: Do NOT call update_memory or invalidate_memory in the same response where you ask for confirmation.** Ask the question first, wait for the user's reply, and only call the tool on the next turn if they agree.
 - **IMPORTANT: Never contradict what the user just said.** When the user tells you something new, acknowledge it and propose the update forward-looking. Do NOT restate the old fact as if it's still current.
   - BAD: "I have it noted that your shoulder is dislocated. Should I update that?" (restates old fact, ignores what the user just said)
   - GOOD: "Got it — sounds like your shoulder has improved. Want me to update what I have on file so I keep that in mind going forward?" (acknowledges the new info, proposes the change naturally)
@@ -722,7 +732,8 @@ There is a workout plan waiting for the user's confirmation:
 - Explanation: ${pendingProposal.explanation}
 
 If the user confirms (e.g., "yes", "looks good", "go ahead"), use confirm_proposal to save it.
-If the user wants changes, use create_plan again with an adjusted goal. The original goal was: "${pendingProposal.goal}"
+If the user confirms with simple adjustments (e.g., "yes but make it 30 minutes", "looks good, schedule it for tomorrow"), use confirm_proposal with the date or duration override. A provisional yes with specific changes IS confirmation — do not re-plan or ask again.
+If the user wants substantive changes (different workout type, fundamentally different focus), use create_plan again with an adjusted goal. The original goal was: "${pendingProposal.goal}"
 If the user rejects it or changes topic, acknowledge their decision and move on.
 `;
     }

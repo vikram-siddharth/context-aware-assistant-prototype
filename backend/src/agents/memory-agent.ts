@@ -83,7 +83,7 @@ export class MemoryAgent implements ToolProvider {
           },
           required: ['memoryId', 'newFact', 'reason'],
         },
-        actionDescription: 'Updating my notes...',
+        actionDescription: 'Updating a note...',
         execute: async (input: { memoryId: string; newFact: string; reason: string }) => {
           const updated = await this.updateMemoryFact(input.memoryId, input.newFact);
           return {
@@ -112,7 +112,7 @@ export class MemoryAgent implements ToolProvider {
           },
           required: ['memoryId', 'date'],
         },
-        actionDescription: 'Updating my notes...',
+        actionDescription: 'Setting a reminder to check back...',
         execute: async (input: { memoryId: string; date: string }) => {
           const expiryDate = new Date(input.date);
           if (isNaN(expiryDate.getTime())) {
@@ -145,7 +145,7 @@ export class MemoryAgent implements ToolProvider {
           },
           required: ['memoryId', 'reason'],
         },
-        actionDescription: 'Updating my notes...',
+        actionDescription: 'Retiring an old note...',
         execute: async (input: { memoryId: string; reason: string }) => {
           const invalidated = await this.invalidateMemory(input.memoryId);
           return {
@@ -218,6 +218,11 @@ Context-specific answers are also session intent — DO NOT extract:
   - "Friday" in response to "When should we schedule this?" (one-time answer)
   - "30 minutes" in response to "How long do you want today's workout?" (single-session choice)
 
+Reactive enthusiasm is also session intent — DO NOT extract:
+  - "Bouldering sounds like fun!" in response to a suggestion (polite acceptance of a suggestion, not a general preference)
+  - "That sounds great!" / "Ooh, I like that idea!" / "Yeah, let's do that!" (conversational agreement, not a durable fact)
+  - The key test: Is the user responding to something YOU suggested, or are they volunteering an unprompted statement about their tastes? Reacting positively to a suggestion is choosing it for now, not declaring an enduring preference.
+
 Only extract facts that would still be true and relevant weeks or months from now.
 Ask yourself: "If I recalled this fact in a completely different conversation weeks later, would it still be useful?" If not, skip it.
 
@@ -227,6 +232,7 @@ Examples of what NOT to extract:
   - "I want a 30-minute workout today" (single-session choice)
   - "Let's do legs" (today's choice, not a lasting preference)
   - "Can we do cardio?" (request for this session)
+  - "Bouldering sounds like fun!" (reactive enthusiasm — responding to a suggestion)
 - Examples of what TO extract:
   - "I like swimming" / "I like to swim" (general enjoyment — durable preference)
   - "I love swimming" (general enjoyment — durable preference)

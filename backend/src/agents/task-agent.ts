@@ -91,10 +91,19 @@ export class TaskAgent implements ToolProvider {
       {
         name: 'confirm_proposal',
         description:
-          'Confirm and save the pending workout plan that was previously presented to the user. Use this only after the user has reviewed and approved the proposed plan. Takes no arguments — it saves the plan that is already waiting.',
+          'Confirm and save the pending workout plan. Use this after the user approves the proposed plan. Optionally pass simple modifications (date or duration) that the user requested — for substantive changes like a different workout type, use create_plan instead.',
         inputSchema: {
           type: 'object',
-          properties: {},
+          properties: {
+            date: {
+              type: 'string',
+              description: 'Override the proposed date (YYYY-MM-DD format). Use when the user confirms but wants a different day.',
+            },
+            duration: {
+              type: 'number',
+              description: 'Override the proposed duration in minutes. Use when the user confirms but wants a different length.',
+            },
+          },
         },
         actionDescription: 'Saving your workout plan...',
         execute: async (input: CreateWorkoutInput) => {
