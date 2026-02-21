@@ -36,6 +36,9 @@ export class Workout {
   })
   status: WorkoutStatus;
 
+  @Column({ type: 'varchar', length: 255, default: 'default' })
+  user_id: string;
+
   @CreateDateColumn()
   created_at: Date;
 

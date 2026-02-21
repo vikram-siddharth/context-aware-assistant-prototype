@@ -5,14 +5,21 @@ import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
 import SessionControls from './components/SessionControls';
 import MemoryModal from './components/MemoryModal';
+import LoginScreen from './components/LoginScreen';
 import './App.css';
 
 function App() {
+  const [userId, setUserId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [pendingReasoning, setPendingReasoning] = useState<ReasoningStepData[]>([]);
   const [memoryModalOpen, setMemoryModalOpen] = useState(false);
   const sessionIdRef = useRef(crypto.randomUUID());
+
+  const handleLogin = useCallback((id: string) => {
+    setUserId(id);
+    sessionIdRef.current = crypto.randomUUID();
+  }, []);
 
   const handleSend = useCallback(async (text: string) => {
     const userMessage: Message = { role: 'user', content: text };
@@ -35,7 +42,7 @@ function App() {
     };
 
     try {
-      await sendMessage(text, sessionIdRef.current, onEvent);
+      await sendMessage(text, sessionIdRef.current, userId!, onEvent);
     } catch (err) {
       resultContent = `Error: ${err instanceof Error ? err.message : 'Something went wrong'}`;
     }
@@ -49,13 +56,24 @@ function App() {
     setMessages((prev) => [...prev, assistantMessage]);
     setPendingReasoning([]);
     setIsStreaming(false);
-  }, []);
+  }, [userId]);
 
   const handleNewChat = useCallback(() => {
     setMessages([]);
     setPendingReasoning([]);
     sessionIdRef.current = crypto.randomUUID();
   }, []);
+
+  const handleSwitchUser = useCallback(() => {
+    setMessages([]);
+    setPendingReasoning([]);
+    sessionIdRef.current = crypto.randomUUID();
+    setUserId(null);
+  }, []);
+
+  if (!userId) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
 
   return (
     <div className="app">
@@ -64,6 +82,7 @@ function App() {
         <SessionControls
           onNewChat={handleNewChat}
           onOpenMemories={() => setMemoryModalOpen(true)}
+          onSwitchUser={handleSwitchUser}
           disabled={isStreaming}
         />
       </header>
@@ -75,7 +94,7 @@ function App() {
         />
         <MessageInput onSend={handleSend} disabled={isStreaming} />
       </main>
-      <MemoryModal open={memoryModalOpen} onClose={() => setMemoryModalOpen(false)} />
+      <MemoryModal open={memoryModalOpen} onClose={() => setMemoryModalOpen(false)} userId={userId} />
     </div>
   );
 }

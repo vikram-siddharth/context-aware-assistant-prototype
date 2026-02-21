@@ -32,7 +32,7 @@ This document captures key design decisions, tradeoffs, and reasoning as we buil
 - `id` (primary key)
 - `fact` (the raw extracted text)
 - `category` (constraint / preference / goal)
-- `persistence` (permanent / temporary — estimated by the LLM during extraction)
+- `persistence` (permanent / long_term / short_term — estimated by the LLM during extraction)
 - `active` (boolean, default true — supports memory invalidation)
 - `created_at`
 
@@ -40,7 +40,7 @@ This document captures key design decisions, tradeoffs, and reasoning as we buil
 - *Expiry date estimation:* We discussed having the LLM estimate a rough expiry date (e.g., a knee injury might heal in months, a heart condition might be permanent). We also discussed having the assistant ask the user about persistence when a fact is first mentioned, or check if a condition still persists when it's retrieved near its estimated expiry. Deferred as a production enhancement (see Appendix).
 - *Confidence scoring:* The spec mentions this as extra credit. Deferred for now.
 
-**Tradeoff:** The `persistence` label is a binary signal (permanent vs. temporary) used to trigger the expiry-setting flow for non-permanent memories. The `estimated_expiry` date (Decision 14) is the actual source of truth for temporality.
+**Tradeoff:** The `persistence` label is coarse but sufficient. In production, a richer model with dates and user confirmation would improve accuracy.
 
 ---
 
@@ -216,7 +216,7 @@ The Orchestrator recognizes three categories of memory changes:
 
 **Context:** Users have no way to see what the system remembers about them. Memories are only visible when the Orchestrator surfaces them in reasoning events during conversation.
 
-**Decision:** Add a read-only panel that displays all active memories with their metadata (fact, category, expiry date, created date). Inactive memories are excluded — the panel answers "what does the system remember about me right now," not "what has the system ever known." No edit, delete, or deactivate controls — all memory changes are handled conversationally through the Orchestrator (invalidation via Decision 7, updates via Decision 8).
+**Decision:** Add a read-only panel that displays all active memories with their metadata (fact, category, persistence, created date). Inactive memories are excluded — the panel answers "what does the system remember about me right now," not "what has the system ever known." No edit, delete, or deactivate controls — all memory changes are handled conversationally through the Orchestrator (invalidation via Decision 7, updates via Decision 8).
 
 - **Backend:** A single `GET /api/memories` endpoint that returns active memories. This bypasses the Orchestrator — it's direct read access to the memories table.
 - **Frontend:** A panel accessible from the chat interface (sidebar, modal, or toggle — implementation detail).
@@ -231,7 +231,7 @@ The Orchestrator recognizes three categories of memory changes:
 
 ## Decision 14: Persistence-Based Memory Expiry (Enhancement)
 
-**Context:** Memories have a `persistence` label (permanent / temporary) but no mechanism for expiry. Outdated facts remain active indefinitely unless the user explicitly contradicts them in conversation.
+**Context:** Memories have a `persistence` label (permanent / long_term / short_term) but no mechanism for expiry. Outdated facts remain active indefinitely unless the user explicitly contradicts them in conversation.
 
 **Decision:** Add an `estimated_expiry` date (nullable) to the memories table and a `set_memory_expiry` tool (registered by the Memory Agent). Permanent memories get null expiry. For memories with a shelf life, the Orchestrator estimates expiry conversationally.
 
@@ -280,6 +280,28 @@ The underlying cause was the session-level flag gating memory mutations. It had 
 The two arming paths (extraction pre-arm and inference block-then-retry) are preserved with the same semantics, scoped to specific memory IDs instead of the session.
 
 **Tradeoff:** Per-memory-ID tracking adds complexity to session state, but eliminates cross-contamination between unrelated memory changes and makes multi-question conversations feel natural.
+
+---
+
+## Decision 16: Multi-User Support via Name-Based Identity (Enhancement)
+
+**Context:** The spec says "single user only" and "no authentication required." However, the team wants to demo the system with multiple people, each seeing their own memories and workouts.
+
+**Decision:** Add lightweight multi-user support without real authentication. A login screen asks for a name (no password). The name is lowercased and trimmed to produce a `user_id` string. No users table — the `user_id` is stored directly on the `memories` and `workouts` tables, and every query filters by it.
+
+- **Database:** Add a `user_id` column to `memories` and `workouts`. All queries gain a `WHERE user_id = ?` filter.
+- **Session controller:** Associates each session with a `user_id`. Passes it to the Orchestrator, which threads it through to agent calls as a direct parameter.
+- **Memory loading (Decision 9):** Loads only the current user's active memories at session start.
+- **Memory inspection UI (Decision 13):** Shows only the current user's memories.
+- **Frontend:** A name input screen before the chat. New Chat resets the conversation but keeps the user. A separate "Switch User" action clears both.
+
+**What doesn't change:** The Orchestrator's logic, agent architecture, tool registration, SSE streaming, confirmation flows, and expiry system. The architecture handles multiple users without structural changes — multi-user is a data isolation concern, not an orchestration concern.
+
+**Alternatives considered:**
+- *Users table with generated IDs:* More robust, handles name collisions, but adds a registration flow and a table that the prototype doesn't need.
+- *Session-based anonymous identity:* Assign a random ID per browser session. Simpler than names, but users can't return to their data after closing the browser.
+
+**Tradeoff:** Name collisions are possible (two people named Alex share data). For a small team demo this is a non-issue. In production, you'd want a proper users table, authentication, and row-level security.
 
 ---
 

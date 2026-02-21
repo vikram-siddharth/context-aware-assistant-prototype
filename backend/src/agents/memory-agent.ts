@@ -166,11 +166,11 @@ export class MemoryAgent implements ToolProvider {
    * handled by the Orchestrator via update_memory / invalidate_memory.
    * This function never throws — all errors are caught and logged.
    */
-  async extractMemories(message: string): Promise<ExtractionResult> {
+  async extractMemories(message: string, userId: string): Promise<ExtractionResult> {
     try {
-      // Fetch all existing active memories for deduplication
+      // Fetch all existing active memories for this user (for deduplication)
       const existingMemories = await this.memoryRepository.find({
-        where: { active: true },
+        where: { active: true, user_id: userId },
         order: { created_at: 'DESC' },
       });
 
@@ -274,6 +274,7 @@ ${existingFactsList || '(none)'}
             fact: memoryData.fact,
             category: memoryData.category as MemoryCategory,
             persistence: memoryData.persistence as MemoryPersistence,
+            user_id: userId,
           });
 
           const saved = await this.memoryRepository.save(memory);
@@ -306,10 +307,10 @@ ${existingFactsList || '(none)'}
   /**
    * Get all memories (utility method)
    */
-  async getAllMemories(): Promise<Memory[]> {
+  async getAllMemories(userId: string): Promise<Memory[]> {
     try {
       return await this.memoryRepository.find({
-        where: { active: true },
+        where: { active: true, user_id: userId },
         order: { created_at: 'DESC' },
       });
     } catch (error) {

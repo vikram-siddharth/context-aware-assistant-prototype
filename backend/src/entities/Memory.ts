@@ -42,6 +42,9 @@ export class Memory {
   @Column({ type: 'date', nullable: true, default: null })
   estimated_expiry: Date | null;
 
+  @Column({ type: 'varchar', length: 255, default: 'default' })
+  user_id: string;
+
   @CreateDateColumn()
   created_at: Date;
 }

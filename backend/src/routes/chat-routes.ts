@@ -17,7 +17,7 @@ const router = Router();
  * - { type: 'thinking' | 'action' | 'result' | 'error', content: string }
  */
 router.post('/', async (req: Request, res: Response) => {
-  const { message, sessionId } = req.body;
+  const { message, sessionId, userId } = req.body;
 
   // Validate required fields (JSON errors before switching to SSE)
   if (!message || typeof message !== 'string') {
@@ -33,6 +33,16 @@ router.post('/', async (req: Request, res: Response) => {
     });
     return;
   }
+
+  if (!userId || typeof userId !== 'string') {
+    res.status(400).json({
+      error: 'Missing or invalid required field: userId (must be a non-empty string)',
+    });
+    return;
+  }
+
+  // Associate this session with the user
+  sessionController.setSessionUser(sessionId, userId);
 
   // Set SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
@@ -58,6 +68,7 @@ router.post('/', async (req: Request, res: Response) => {
       conversationHistory,
       sendEvent,
       sessionId,
+      userId,
     );
 
     // Add user message to session history

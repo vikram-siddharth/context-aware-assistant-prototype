@@ -360,6 +360,75 @@
   font-weight: 600;
 }
 
+/* Login screen */
+.login-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+}
+
+.login-screen__card {
+  text-align: center;
+  max-width: 400px;
+  width: 100%;
+  padding: 2rem;
+}
+
+.login-screen__title {
+  font-size: 1.5rem;
+  margin: 0 0 0.5rem;
+}
+
+.login-screen__subtitle {
+  color: #888;
+  margin: 0 0 1.5rem;
+}
+
+.login-screen__form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.login-screen__form input {
+  padding: 0.75rem 1rem;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #1a1a1a;
+  color: inherit;
+  font-size: 1rem;
+  font-family: inherit;
+  outline: none;
+  text-align: center;
+  transition: border-color 0.2s;
+}
+
+.login-screen__form input:focus {
+  border-color: #646cff;
+}
+
+.login-screen__form button {
+  padding: 0.75rem 1.5rem;
+  background: #646cff;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 1rem;
+  transition: background 0.2s;
+}
+
+.login-screen__form button:hover:not(:disabled) {
+  background: #535bf2;
+}
+
+.login-screen__form button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 /* Light mode */
 @media (prefers-color-scheme: light) {
   .chat-message--user .chat-message__content {
@@ -399,5 +468,10 @@
 
   .memory-modal__backdrop {
     background: rgba(0, 0, 0, 0.3);
+  }
+
+  .login-screen__form input {
+    background: #fff;
+    border-color: #ccc;
   }
 }

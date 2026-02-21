@@ -3,12 +3,13 @@ import type { OrchestratorEvent, MemoryData } from '../types';
 export async function sendMessage(
   message: string,
   sessionId: string,
+  userId: string,
   onEvent: (event: OrchestratorEvent) => void
 ): Promise<void> {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, sessionId }),
+    body: JSON.stringify({ message, sessionId, userId }),
   });
 
   if (!response.ok) {
@@ -49,8 +50,8 @@ export async function sendMessage(
   }
 }
 
-export async function fetchMemories(): Promise<MemoryData[]> {
-  const response = await fetch('/api/memories');
+export async function fetchMemories(userId: string): Promise<MemoryData[]> {
+  const response = await fetch(`/api/memories?userId=${encodeURIComponent(userId)}`);
 
   if (!response.ok) {
     const error = await response.json();

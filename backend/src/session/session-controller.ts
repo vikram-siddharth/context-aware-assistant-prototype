@@ -31,12 +31,14 @@ export class SessionController {
   private sessionMemories: Map<string, Memory[]>;
   private pendingProposals: Map<string, PendingProposal>;
   private pendingMemoryChanges: Map<string, PendingMemoryChangeSet>;
+  private sessionUsers: Map<string, string>;  // sessionId → userId
 
   constructor() {
     this.sessions = new Map();
     this.sessionMemories = new Map();
     this.pendingProposals = new Map();
     this.pendingMemoryChanges = new Map();
+    this.sessionUsers = new Map();
   }
 
   /**
@@ -81,6 +83,20 @@ export class SessionController {
   }
 
   /**
+   * Associate a session with a user ID.
+   */
+  setSessionUser(sessionId: string, userId: string): void {
+    this.sessionUsers.set(sessionId, userId);
+  }
+
+  /**
+   * Get the user ID associated with a session, or null if not set.
+   */
+  getSessionUser(sessionId: string): string | null {
+    return this.sessionUsers.get(sessionId) ?? null;
+  }
+
+  /**
    * Clear conversation history and cached memories for a session
    */
   clearSession(sessionId: string): void {
@@ -88,6 +104,7 @@ export class SessionController {
     this.sessionMemories.delete(sessionId);
     this.pendingProposals.delete(sessionId);
     this.pendingMemoryChanges.delete(sessionId);
+    this.sessionUsers.delete(sessionId);
   }
 
   /**

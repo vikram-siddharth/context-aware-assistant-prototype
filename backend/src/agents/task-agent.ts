@@ -10,6 +10,7 @@ export interface CreateWorkoutInput {
   date: Date;
   description?: string;
   status?: WorkoutStatus;
+  user_id: string;
 }
 
 export interface UpdateWorkoutInput {
@@ -21,6 +22,7 @@ export interface UpdateWorkoutInput {
 }
 
 export interface GetWorkoutsFilter {
+  user_id: string;
   status?: WorkoutStatus;
   startDate?: Date;
   endDate?: Date;
@@ -64,7 +66,7 @@ export class TaskAgent implements ToolProvider {
         },
         actionDescription: 'Looking up your workouts...',
         execute: async (input: any) => {
-          const filter: GetWorkoutsFilter = {};
+          const filter: GetWorkoutsFilter = { user_id: input.user_id };
           if (input.status) filter.status = input.status as WorkoutStatus;
           if (input.type) filter.type = input.type;
           if (input.startDate) filter.startDate = new Date(input.startDate);
@@ -124,6 +126,7 @@ export class TaskAgent implements ToolProvider {
       date: input.date,
       description: input.description || null,
       status: input.status || WorkoutStatus.SCHEDULED,
+      user_id: input.user_id,
     });
 
     return await this.workoutRepository.save(workout);
@@ -132,8 +135,11 @@ export class TaskAgent implements ToolProvider {
   /**
    * Get workouts with optional filtering
    */
-  async getWorkouts(filter?: GetWorkoutsFilter): Promise<Workout[]> {
+  async getWorkouts(filter: GetWorkoutsFilter): Promise<Workout[]> {
     const queryBuilder = this.workoutRepository.createQueryBuilder('workout');
+
+    // Always filter by user
+    queryBuilder.andWhere('workout.user_id = :userId', { userId: filter.user_id });
 
     if (filter?.status) {
       queryBuilder.andWhere('workout.status = :status', { status: filter.status });
@@ -194,17 +200,17 @@ export class TaskAgent implements ToolProvider {
   /**
    * Get workout statistics
    */
-  async getWorkoutStats(): Promise<{
+  async getWorkoutStats(userId: string): Promise<{
     total: number;
     scheduled: number;
     completed: number;
     cancelled: number;
   }> {
     const [total, scheduled, completed, cancelled] = await Promise.all([
-      this.workoutRepository.count(),
-      this.workoutRepository.count({ where: { status: WorkoutStatus.SCHEDULED } }),
-      this.workoutRepository.count({ where: { status: WorkoutStatus.COMPLETED } }),
-      this.workoutRepository.count({ where: { status: WorkoutStatus.CANCELLED } }),
+      this.workoutRepository.count({ where: { user_id: userId } }),
+      this.workoutRepository.count({ where: { status: WorkoutStatus.SCHEDULED, user_id: userId } }),
+      this.workoutRepository.count({ where: { status: WorkoutStatus.COMPLETED, user_id: userId } }),
+      this.workoutRepository.count({ where: { status: WorkoutStatus.CANCELLED, user_id: userId } }),
     ]);
 
     return { total, scheduled, completed, cancelled };

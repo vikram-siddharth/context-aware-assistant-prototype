@@ -5,6 +5,7 @@ import { fetchMemories } from '../api/chat';
 type Props = {
   open: boolean;
   onClose: () => void;
+  userId: string;
 };
 
 const CATEGORY_LABELS: Record<MemoryData['category'], string> = {
@@ -51,7 +52,7 @@ function groupByCategory(memories: MemoryData[]): { category: MemoryData['catego
     .filter((g) => g.items.length > 0);
 }
 
-export default function MemoryModal({ open, onClose }: Props) {
+export default function MemoryModal({ open, onClose, userId }: Props) {
   const [groups, setGroups] = useState<{ category: MemoryData['category']; items: MemoryData[] }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,11 +63,11 @@ export default function MemoryModal({ open, onClose }: Props) {
     setLoading(true);
     setError(null);
 
-    fetchMemories()
+    fetchMemories(userId)
       .then((data) => setGroups(groupByCategory(data)))
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [open]);
+  }, [open, userId]);
 
   if (!open) return null;
 

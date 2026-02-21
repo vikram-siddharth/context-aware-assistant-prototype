@@ -51,6 +51,7 @@ export class Orchestrator {
   }
 
   private currentSessionId: string = ''; // Track current session for tool execution
+  private currentUserId: string = '';    // Track current user for tool execution
 
   /**
    * Small delay between rapid events so the UI can render them
@@ -94,9 +95,11 @@ export class Orchestrator {
     conversationHistory: CoreMessage[] = [],
     onEvent?: EventCallback,
     sessionId: string = 'default',
+    userId: string = 'default',
   ): Promise<{ response: string }> {
     console.log('[Orchestrator] Processing message:', userMessage);
     this.currentSessionId = sessionId;
+    this.currentUserId = userId;
 
     // Advance the turn counter and expire stale memory change authorizations
     sessionController.incrementTurn(sessionId);
@@ -108,7 +111,7 @@ export class Orchestrator {
 
     if (isFirstMessage) {
       // First message in session: load all active memories from DB
-      memories = await memoryAgent.getAllMemories();
+      memories = await memoryAgent.getAllMemories(userId);
       sessionController.setSessionMemories(sessionId, memories);
       console.log(`[Orchestrator] Loaded ${memories.length} memories for new session ${sessionId}`);
 
@@ -121,7 +124,7 @@ export class Orchestrator {
     }
 
     // Run extraction (awaited so we can use refinement signals in the prompt)
-    const extractionResult = await memoryAgent.extractMemories(userMessage);
+    const extractionResult = await memoryAgent.extractMemories(userMessage, userId);
 
     if (extractionResult.newMemories.length > 0) {
       const cached = sessionController.getSessionMemories(sessionId) || [];
@@ -387,10 +390,18 @@ export class Orchestrator {
         date: new Date(pending.date),
         description: pending.description,
         status: pending.status,
+        user_id: this.currentUserId,
       });
 
       sessionController.clearPendingProposal(this.currentSessionId);
       return result;
+    };
+
+    // get_workouts: inject user_id into input
+    const getWorkouts = registry.get('get_workouts')!;
+    const getWorkoutsBase = getWorkouts.execute;
+    getWorkouts.execute = async (input: any) => {
+      return getWorkoutsBase({ ...input, user_id: this.currentUserId });
     };
 
     // update_memory: refresh session cache after update
@@ -399,7 +410,7 @@ export class Orchestrator {
     updateMemory.execute = async (input: any) => {
       const result = await updateMemoryBase(input);
       if (result.success) {
-        const refreshed = await memoryAgent.getAllMemories();
+        const refreshed = await memoryAgent.getAllMemories(this.currentUserId);
         sessionController.setSessionMemories(this.currentSessionId, refreshed);
       }
       return result;
@@ -411,7 +422,7 @@ export class Orchestrator {
     setMemoryExpiry.execute = async (input: any) => {
       const result = await setMemoryExpiryBase(input);
       if (result.success) {
-        const refreshed = await memoryAgent.getAllMemories();
+        const refreshed = await memoryAgent.getAllMemories(this.currentUserId);
         sessionController.setSessionMemories(this.currentSessionId, refreshed);
       }
       return result;
@@ -423,7 +434,7 @@ export class Orchestrator {
     invalidateMemory.execute = async (input: any) => {
       const result = await invalidateMemoryBase(input);
       if (result.success) {
-        const refreshed = await memoryAgent.getAllMemories();
+        const refreshed = await memoryAgent.getAllMemories(this.currentUserId);
         sessionController.setSessionMemories(this.currentSessionId, refreshed);
       }
       return result;

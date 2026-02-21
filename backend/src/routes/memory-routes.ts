@@ -10,7 +10,13 @@ const router = Router();
  */
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const memories = await memoryAgent.getAllMemories();
+    const userId = req.query.userId as string;
+    if (!userId) {
+      res.status(400).json({ error: 'Missing required query parameter: userId' });
+      return;
+    }
+
+    const memories = await memoryAgent.getAllMemories(userId);
 
     res.json({
       memories: memories.map((m) => ({

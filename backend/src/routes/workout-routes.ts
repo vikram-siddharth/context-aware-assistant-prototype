@@ -10,12 +10,19 @@ const router = Router();
  */
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { type, duration, date, description, status } = req.body;
+    const { type, duration, date, description, status, userId } = req.body;
 
     // Validate required fields
     if (!type || !duration || !date) {
       res.status(400).json({
         error: 'Missing required fields: type, duration, date',
+      });
+      return;
+    }
+
+    if (!userId || typeof userId !== 'string') {
+      res.status(400).json({
+        error: 'Missing required field: userId',
       });
       return;
     }
@@ -42,6 +49,7 @@ router.post('/', async (req: Request, res: Response) => {
       date: new Date(date),
       description,
       status,
+      user_id: userId,
     });
 
     res.status(201).json(workout);
@@ -57,9 +65,14 @@ router.post('/', async (req: Request, res: Response) => {
  */
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const { status, type, startDate, endDate } = req.query;
+    const { status, type, startDate, endDate, userId } = req.query;
 
-    const filter: any = {};
+    if (!userId || typeof userId !== 'string') {
+      res.status(400).json({ error: 'Missing required query parameter: userId' });
+      return;
+    }
+
+    const filter: any = { user_id: userId };
 
     if (status) {
       if (!Object.values(WorkoutStatus).includes(status as WorkoutStatus)) {
@@ -97,7 +110,13 @@ router.get('/', async (req: Request, res: Response) => {
  */
 router.get('/stats', async (req: Request, res: Response) => {
   try {
-    const stats = await taskAgent.getWorkoutStats();
+    const userId = req.query.userId as string;
+    if (!userId) {
+      res.status(400).json({ error: 'Missing required query parameter: userId' });
+      return;
+    }
+
+    const stats = await taskAgent.getWorkoutStats(userId);
     res.json(stats);
   } catch (error) {
     console.error('Error fetching workout stats:', error);
