@@ -18,7 +18,7 @@ async function streamChat(message: string, sessionId: string): Promise<void> {
   const res = await fetch(`${BASE_URL}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, sessionId }),
+    body: JSON.stringify({ message, sessionId, userId: 'test-user' }),
   });
 
   if (!res.ok || !res.body) {
@@ -77,7 +77,7 @@ async function main() {
   console.log('Database connected\n');
 
   // Clean up memories so sessions start fresh
-  const existing = await memoryAgent.getAllMemories();
+  const existing = await memoryAgent.getAllMemories('test-user');
   for (const m of existing) await memoryAgent.deleteMemory(m.id);
   console.log(`Cleaned ${existing.length} existing memories\n`);
 
@@ -107,7 +107,7 @@ async function main() {
     console.log('\n  Waiting 3s for memory extraction...\n');
     await new Promise((r) => setTimeout(r, 3000));
 
-    const memories = await memoryAgent.getAllMemories();
+    const memories = await memoryAgent.getAllMemories('test-user');
     console.log(`  Memories in DB: ${memories.length}`);
     memories.forEach((m, i) => {
       console.log(`    ${i + 1}. [${m.category}] ${m.fact}`);

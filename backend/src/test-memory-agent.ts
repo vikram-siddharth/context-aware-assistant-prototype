@@ -14,12 +14,12 @@ async function testMemoryAgent() {
     const testMessage = "I have a knee injury and I prefer morning workouts. My goal is to run a 5K in 3 months.";
     console.log('Message:', testMessage);
 
-    await memoryAgent.extractMemories(testMessage);
+    await memoryAgent.extractMemories(testMessage, 'test-user');
     console.log('✅ Memory extraction completed (check logs above)');
 
     // Test 2: Retrieve all memories
     console.log('\n--- Test 2: Retrieving all memories ---');
-    const allMemories = await memoryAgent.getAllMemories();
+    const allMemories = await memoryAgent.getAllMemories('test-user');
     console.log('Total memories:', allMemories.length);
     allMemories.forEach((m) => {
       console.log(`- ${m.fact} (${m.category}, ${m.persistence})`);

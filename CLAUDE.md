@@ -51,15 +51,23 @@ Postgres (TypeORM)
 - `create_workout` is internal-only — called by `confirm_proposal` to write to DB, never exposed to the LLM as a callable tool
 - A guardrail in `processMessage` blocks `confirm_proposal` in the same turn as `create_plan`
 - Dynamic tool registration: each agent implements a `ToolProvider` interface with `getTools()`. The Orchestrator pulls tools from all agents at startup and builds a unified registry with collision detection. Orchestrator-level wrappers (`applyToolWrappers`) add session coordination (e.g., stashing proposals, refreshing memory caches) without agents needing session knowledge.
-- Session intent vs. durable facts: both the Memory Agent extraction prompt and the Orchestrator system prompt distinguish ephemeral session intent ("I'd like to swim") from durable facts ("I like swimming"). The linguistic test (conditional mood → session intent, indicative mood → durable fact) prevents storing one-time requests as lasting preferences.
+- Session intent vs. durable facts: both the Memory Agent extraction prompt and the Orchestrator system prompt distinguish ephemeral session intent ("I'd like to swim") from durable facts ("I like swimming"). The linguistic test (conditional mood → session intent, indicative mood → durable fact) prevents storing one-time requests as lasting preferences. Reactive enthusiasm ("Bouldering sounds like fun!" in response to a suggestion) is also session intent — polite acceptance of a suggestion is not a lasting preference.
 - The UI must never show tool names, raw JSON, SQL, embeddings, or prompt scaffolding
+
+## Multi-User Support
+- Name-based identity: userId = lowercased, trimmed name string (no users table, no authentication)
+- Both entities have a `user_id` varchar column — all queries filter by user
+- Session-to-user mapping tracked in Session Controller (`sessionUsers` Map)
+- userId flows from frontend → POST body → routes → orchestrator → agents → database
+- Orchestrator has `private currentUserId` field (set at top of `processMessage()`, read by tool wrappers) — mirrors existing `currentSessionId` pattern
+- Frontend login screen: name input → produces userId → conditional render (login vs chat)
 
 ## Database Schema
 ### Workout (transactional domain state)
-id, type, duration, date, description (nullable), status (scheduled/completed/cancelled), created_at, updated_at
+id, type, duration, date, description (nullable), status (scheduled/completed/cancelled), user_id, created_at, updated_at
 
 ### Memory (persistent memory)
-id, fact, category (constraint/preference/goal), persistence (permanent/temporary), active (boolean, default true), estimated_expiry (date, nullable, default null), created_at
+id, fact, category (constraint/preference/goal), persistence (permanent/temporary), active (boolean, default true), estimated_expiry (date, nullable, default null), user_id, created_at
 
 ## Implementation Notes
 
@@ -70,7 +78,7 @@ id, fact, category (constraint/preference/goal), persistence (permanent/temporar
 - `applyToolWrappers(registry)` wraps agent-owned tools with orchestrator-level coordination: `create_plan` gets session memories injected and stashes proposals; `confirm_proposal` reads/clears pending proposals from session state; `update_memory`/`invalidate_memory`/`set_memory_expiry` refresh the session memory cache after mutations
 - `executeTool()` is a simple registry lookup — no switch/case routing
 - LLM-callable tools: `get_workouts`, `create_plan`, `confirm_proposal`, `update_memory`, `invalidate_memory`, `set_memory_expiry`
-- `processMessage()` returns `{ response: string }`
+- `processMessage(message, conversationHistory, onEvent, sessionId, userId)` returns `{ response: string }`
 - Accepts optional `onEvent` callback (`EventCallback`) for SSE streaming
 - Exports `OrchestratorEvent` type: `{ type: 'thinking' | 'action' | 'result' | 'error', content: string }`
 - Emits human-readable events at each stage (tool execution, final response) — does NOT list all memories at session start
@@ -83,12 +91,13 @@ id, fact, category (constraint/preference/goal), persistence (permanent/temporar
 - When extraction detects refinements, they are NOT auto-applied — they are passed to the LLM via a "Detected Memory Changes" section in the system prompt, so the LLM can handle them through the two-turn confirmation flow (ask user → wait → call update_memory or invalidate_memory)
 - 400ms delay between rapid events so the UI can render them; final result event has no delay
 - `create_plan` wrapper (in `applyToolWrappers`) injects session memories, calls Planning Agent, stashes the generated plan as a `PendingProposal` in session state (does NOT write to DB), and returns plan details + message telling the LLM to present and wait
-- `confirm_proposal` wrapper reads the pending proposal from session state, passes it to Task Agent's execute function, writes it to DB, and clears the proposal
+- `confirm_proposal` wrapper reads the pending proposal from session state, applies optional date/duration overrides from LLM input, injects `user_id: this.currentUserId`, passes to Task Agent's execute function, writes it to DB, and clears the proposal
+- `get_workouts` wrapper injects `user_id: this.currentUserId` into input before calling base execute
 - Guardrail: `toolsCalledThisTurn` Set tracks tool names per `processMessage()` call; blocks `confirm_proposal` if `create_plan` was already called in the same turn
 - Guardrail: `pendingMemoryChanges` in session state enforces confirmation for memory mutations at the per-memory-ID level. `update_memory`/`invalidate_memory` are blocked unless the specific memory ID has been authorized via `isMemoryChangeAuthorized()`. Two arming paths: (1) **extraction path** — specific memory IDs pre-armed when extraction detects refinements, via `armPendingMemoryChanges(sessionId, memoryIds)`; (2) **inference path** — specific memory ID armed when the guardrail blocks a tool call, error message tells the LLM to retry immediately if the user already confirmed (block-then-retry within the same agentic loop). Authorization is consumed per-memory-ID via `consumeMemoryChange()` when the tool executes — other authorized memories remain available in the same agentic loop. Turn counter increments at the start of each `processMessage()`; `expireStaleChanges()` removes authorizations older than 3 turns to prevent stale flags.
-- System prompt includes "Session Intent vs. Durable Facts" section with linguistic test (conditional mood = session intent, indicative mood = durable fact)
-- System prompt includes "Workout Planning Flow" section describing the two-turn confirmation flow (create_plan → confirm_proposal)
-- System prompt includes "Pending Workout Proposal" section (conditional) when a proposal exists, with instructions for confirm/modify/reject
+- System prompt includes "Session Intent vs. Durable Facts" section with linguistic test (conditional mood = session intent, indicative mood = durable fact) and reactive enthusiasm filter
+- System prompt includes "Workout Planning Flow" section: conversational pre-planning (engage before jumping to create_plan), constraint conflict check (ask user if constraint is still current before planning around it), two-turn confirmation (create_plan → confirm_proposal), and provisional confirmation with overrides (user says "yes but make it 30 minutes" → confirm_proposal with duration override, no re-plan)
+- System prompt includes "Pending Workout Proposal" section (conditional) when a proposal exists, with instructions for confirm/modify/reject and provisional confirmation with overrides
 - System prompt includes "Setting Expiry on Memories" section instructing the LLM to determine if new facts have natural endpoints, ask the user about timeframe conversationally, and fall back to estimation if the user doesn't answer. Also instructs the LLM to call `set_memory_expiry` alongside `update_memory` when the updated fact includes temporal information, and to distinguish between specific date corrections (apply directly) and vague timeline changes (ask for clarification first)
 - System prompt includes "Expiring Memories — Check-In Needed" section (conditional) when memories are expired or within 2 weeks of expiry, with category-specific check-in rules (goals/preferences: proactive; constraints: when relevant)
 - Memory context listing now includes expiry dates inline for memories that have them (e.g., `(expires: 2026-03-15)`)
@@ -97,17 +106,18 @@ id, fact, category (constraint/preference/goal), persistence (permanent/temporar
 ### Session Controller
 - In-memory Map storing conversation history by session ID
 - Uses AI SDK's CoreMessage type for message format compatibility
-- Four Maps: `sessions` (conversation history), `sessionMemories` (cached memories), `pendingProposals` (pending workout proposals), `pendingMemoryChanges` (per-memory-ID authorization tracking with turn counter)
+- Five Maps: `sessions` (conversation history), `sessionMemories` (cached memories), `pendingProposals` (pending workout proposals), `pendingMemoryChanges` (per-memory-ID authorization tracking with turn counter), `sessionUsers` (sessionId → userId)
 - Exports `PendingProposal` type: `{ type, duration, date (ISO string), description, status, explanation, goal }`
 - Exports `PendingMemoryChange` type: `{ memoryId, armedAtTurn }` and `PendingMemoryChangeSet` type: `{ changes: Map<string, PendingMemoryChange>, currentTurn: number }`
-- Methods: addMessage, getHistory, setSessionMemories, getSessionMemories, hasLoadedMemories, clearSession, getActiveSessions, hasSession, setPendingProposal, getPendingProposal, clearPendingProposal, hasPendingProposal, armPendingMemoryChanges, isMemoryChangeAuthorized, consumeMemoryChange, incrementTurn, expireStaleChanges, hasPendingMemoryChanges, getPendingMemoryChangeIds
-- `clearSession()` clears all four Maps for the session
+- Methods: addMessage, getHistory, setSessionMemories, getSessionMemories, hasLoadedMemories, clearSession, getActiveSessions, hasSession, setPendingProposal, getPendingProposal, clearPendingProposal, hasPendingProposal, armPendingMemoryChanges, isMemoryChangeAuthorized, consumeMemoryChange, incrementTurn, expireStaleChanges, hasPendingMemoryChanges, getPendingMemoryChangeIds, setSessionUser, getSessionUser
+- `clearSession()` clears all five Maps for the session
 
 ### Memory Agent
-- Implements `ToolProvider` — owns `update_memory`, `invalidate_memory`, and `set_memory_expiry` tools
+- Implements `ToolProvider` — owns `update_memory`, `invalidate_memory`, and `set_memory_expiry` tools (each with a distinct `actionDescription`: "Updating a note...", "Retiring an old note...", "Setting a reminder to check back...")
+- `extractMemories(message, userId)` and `getAllMemories(userId)` accept userId for data isolation
 - Extraction is best-effort, never throws errors — returns `ExtractionResult { newMemories, refinements }`
 - Extraction has two jobs: (1) extract genuinely new facts, (2) detect refinements to existing memories
-- Extraction prompt includes "Session Intent vs. Durable Facts" section: conditional/volitional phrasing ("I'd like to swim", "I'd love to swim") is session intent and must NOT be extracted; general/habitual phrasing ("I like swimming", "I love swimming") is a durable fact and should be extracted
+- Extraction prompt includes "Session Intent vs. Durable Facts" section: conditional/volitional phrasing ("I'd like to swim", "I'd love to swim") is session intent and must NOT be extracted; general/habitual phrasing ("I like swimming", "I love swimming") is a durable fact and should be extracted. Reactive enthusiasm ("Bouldering sounds like fun!" in response to a suggestion) is also session intent and must NOT be extracted.
 - Exports `MemoryRefinement` type: `{ existingMemoryId, existingFact, suggestedUpdate, reason }`
 - Refinements are returned to the Orchestrator (not acted on by the Memory Agent) — the Orchestrator auto-applies them and notifies the LLM so it can acknowledge naturally
 - Deduplication: passes existing active memories (with IDs) to LLM to avoid re-extraction
@@ -125,17 +135,22 @@ id, fact, category (constraint/preference/goal), persistence (permanent/temporar
 - Returns: type, duration, description, explanation (why this plan was chosen)
 - Specialized system prompt focused on workout planning and constraint awareness
 - Groups memories by category in prompt (CONSTRAINTS, Goals, Preferences)
-- Emphasizes respecting physical constraints and explaining alternatives
+- Emphasizes respecting physical constraints and explaining alternatives. Includes "physical feasibility first" rule: if a constraint makes the entire activity category unsafe or impossible (e.g., dislocated shoulder → tennis), do NOT generate a superficially modified version — recommend a genuinely different activity instead
 - Does NOT write to database — Orchestrator stashes generated plans as pending proposals in session state
 
 ### Chat Routes
-- POST /api/chat - SSE streaming endpoint (accepts message + sessionId in JSON body, streams OrchestratorEvents)
+- POST /api/chat - SSE streaming endpoint (accepts message + sessionId + userId in JSON body, streams OrchestratorEvents)
   - Validation errors return JSON (before SSE headers are sent)
   - Sets `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`
   - Each event written as `data: {json}\n\n`
   - Stream closed in `finally` block after orchestrator completes
 - DELETE /api/chat/sessions/:sessionId - Clear session history
 - GET /api/chat/sessions - List active sessions
+
+### Other Routes
+- GET /api/memories?userId=... - Retrieve memories filtered by user
+- POST /api/workouts (userId in body), GET /api/workouts?userId=... - Workouts filtered by user
+- ID-based operations (GET/PUT/DELETE /api/workouts/:id) don't need userId since IDs are globally unique UUIDs
 
 ## Test Results
 **Last tested:** 2026-02-17
@@ -182,3 +197,5 @@ Integration test (`test-orchestrator.ts`) validates:
 - [x] Memory expiry column (estimated_expiry: nullable date, defaults to null)
 - [x] Memory expiry behavior (`set_memory_expiry` tool, conversational estimation with fallback, check-in on expiring/expired memories at session start)
 - [x] Memory-ID-specific confirmation guardrail (Decision 15: per-memory-ID authorization with turn counter, 3-turn patience window, stale flag prevention)
+- [x] Multi-user support (Decision 16: name-based identity, user_id on entities, login screen, data isolation, userId threading through stack)
+- [x] Prompt iteration: conversational pre-planning, constraint conflict checks, provisional confirmation with overrides, reactive enthusiasm filtering, physical feasibility in Planning Agent, distinct action descriptions

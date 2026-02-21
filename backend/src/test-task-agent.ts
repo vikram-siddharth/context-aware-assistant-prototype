@@ -21,6 +21,7 @@ async function testTaskAgent() {
       duration: 45,
       date: today,
       description: 'Morning swim session',
+      user_id: 'test-user',
     });
     console.log('✅ Workout created:', {
       id: workout.id,
@@ -34,7 +35,7 @@ async function testTaskAgent() {
 
     // Fetch all workouts
     console.log('📋 Fetching all workouts...');
-    const workouts = await taskAgent.getWorkouts();
+    const workouts = await taskAgent.getWorkouts({ user_id: 'test-user' });
     console.log(`✅ Found ${workouts.length} workout(s):\n`);
 
     workouts.forEach((w, index) => {
@@ -51,7 +52,7 @@ async function testTaskAgent() {
 
     // Get workout stats
     console.log('📊 Workout Statistics:');
-    const stats = await taskAgent.getWorkoutStats();
+    const stats = await taskAgent.getWorkoutStats('test-user');
     console.log(`  Total: ${stats.total}`);
     console.log(`  Scheduled: ${stats.scheduled}`);
     console.log(`  Completed: ${stats.completed}`);

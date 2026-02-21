@@ -54,6 +54,10 @@ function setCurrentSessionId(sessionId: string): void {
   (orchestrator as any).currentSessionId = sessionId;
 }
 
+function setCurrentUserId(userId: string): void {
+  (orchestrator as any).currentUserId = userId;
+}
+
 // ============================================================
 // PART A: Registry pattern tests (no DB needed for most)
 // ============================================================
@@ -92,7 +96,7 @@ function testToolDefinitionsFormat() {
 
   const confirmProposal = tools.find((t: any) => t.name === 'confirm_proposal');
   const confirmProps = Object.keys(confirmProposal.input_schema.properties || {});
-  assert(confirmProps.length === 0, 'confirm_proposal has no properties (takes no args)');
+  assert(confirmProps.length === 2, 'confirm_proposal has 2 optional properties (date, duration)');
 
   const setMemExpiry = tools.find((t: any) => t.name === 'set_memory_expiry');
   assert(setMemExpiry.input_schema.required?.includes('memoryId'), 'set_memory_expiry requires memoryId');
@@ -114,9 +118,9 @@ function testActionDescriptions() {
   assert(describeToolAction('get_workouts') === 'Looking up your workouts...', 'get_workouts description');
   assert(describeToolAction('create_plan') === 'Creating a personalized workout plan...', 'create_plan description');
   assert(describeToolAction('confirm_proposal') === 'Saving your workout plan...', 'confirm_proposal description');
-  assert(describeToolAction('update_memory') === 'Updating my notes...', 'update_memory description');
-  assert(describeToolAction('set_memory_expiry') === 'Updating my notes...', 'set_memory_expiry description');
-  assert(describeToolAction('invalidate_memory') === 'Updating my notes...', 'invalidate_memory description');
+  assert(describeToolAction('update_memory') === 'Updating a note...', 'update_memory description');
+  assert(describeToolAction('set_memory_expiry') === 'Setting a reminder to check back...', 'set_memory_expiry description');
+  assert(describeToolAction('invalidate_memory') === 'Retiring an old note...', 'invalidate_memory description');
   assert(describeToolAction('nonexistent_tool') === 'Working on that...', 'unknown tool gets default');
 }
 
@@ -201,6 +205,7 @@ async function testGetWorkoutsViaRegistry() {
   console.log('\n--- Test 7: get_workouts executes through registry ---');
   const sessionId = 'test-reg-7';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
 
   const result = await executeTool('get_workouts', {});
 
@@ -213,6 +218,7 @@ async function testCreatePlanWrapper() {
   console.log('\n--- Test 8: create_plan wrapper injects memories and stashes proposal ---');
   const sessionId = 'test-reg-8';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
   sessionController.setSessionMemories(sessionId, []);
   sessionController.clearPendingProposal(sessionId);
 
@@ -242,6 +248,7 @@ async function testConfirmProposalWrapper() {
   console.log('\n--- Test 9: confirm_proposal wrapper reads proposal and writes to DB ---');
   const sessionId = 'test-reg-9';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
 
   // Stash a proposal manually (simulates create_plan having run)
   const proposal: PendingProposal = {
@@ -255,7 +262,7 @@ async function testConfirmProposalWrapper() {
   };
   sessionController.setPendingProposal(sessionId, proposal);
 
-  const countBefore = (await taskAgent.getWorkouts()).length;
+  const countBefore = (await taskAgent.getWorkouts({ user_id: 'test-user' })).length;
 
   // confirm_proposal takes no args — wrapper reads from session
   const result = await executeTool('confirm_proposal', {});
@@ -267,7 +274,7 @@ async function testConfirmProposalWrapper() {
   assert(result.workout.description === 'Gentle yoga for flexibility', 'workout description matches');
 
   // DB write
-  const countAfter = (await taskAgent.getWorkouts()).length;
+  const countAfter = (await taskAgent.getWorkouts({ user_id: 'test-user' })).length;
   assert(countAfter === countBefore + 1, `workout count increased (${countBefore} → ${countAfter})`);
 
   // Proposal cleared
@@ -278,6 +285,7 @@ async function testConfirmProposalNoPending() {
   console.log('\n--- Test 10: confirm_proposal wrapper returns error when no proposal ---');
   const sessionId = 'test-reg-10';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
   sessionController.clearPendingProposal(sessionId);
 
   const result = await executeTool('confirm_proposal', {});
@@ -290,15 +298,16 @@ async function testUpdateMemoryWrapper() {
   console.log('\n--- Test 11: update_memory wrapper refreshes session cache ---');
   const sessionId = 'test-reg-11';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
 
   // Create a memory to update
-  const memories = await memoryAgent.getAllMemories();
+  const memories = await memoryAgent.getAllMemories('test-user');
   let testMemory;
   if (memories.length > 0) {
     testMemory = memories[0];
   } else {
     // Extract a memory first
-    const extraction = await memoryAgent.extractMemories('I have a bad knee from an old injury');
+    const extraction = await memoryAgent.extractMemories('I have a bad knee from an old injury', 'test-user');
     if (extraction.newMemories.length > 0) {
       testMemory = extraction.newMemories[0];
     }
@@ -334,14 +343,15 @@ async function testInvalidateMemoryWrapper() {
   console.log('\n--- Test 12: invalidate_memory wrapper refreshes session cache ---');
   const sessionId = 'test-reg-12';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
 
   // Create a memory to invalidate
-  const extraction = await memoryAgent.extractMemories('I am training for a triathlon');
+  const extraction = await memoryAgent.extractMemories('I am training for a triathlon', 'test-user');
   let testMemory;
   if (extraction.newMemories.length > 0) {
     testMemory = extraction.newMemories[0];
   } else {
-    const all = await memoryAgent.getAllMemories();
+    const all = await memoryAgent.getAllMemories('test-user');
     if (all.length > 0) testMemory = all[all.length - 1];
   }
 

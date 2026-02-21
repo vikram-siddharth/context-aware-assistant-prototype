@@ -30,7 +30,7 @@ async function testOrchestrator() {
 
     // Clean up any existing test data
     console.log('🧹 Cleaning up existing test data...');
-    const existingMemories = await memoryAgent.getAllMemories();
+    const existingMemories = await memoryAgent.getAllMemories('test-user');
     for (const memory of existingMemories) {
       await memoryAgent.deleteMemory(memory.id);
     }
@@ -47,7 +47,7 @@ async function testOrchestrator() {
     console.log(`\n📨 User message: "${message1}"`);
     console.log(`🔑 Session ID: session-1\n`);
 
-    const { response: response1 } = await orchestrator.processMessage(message1, []);
+    const { response: response1 } = await orchestrator.processMessage(message1, [], undefined, 'session-1', 'test-user');
 
     console.log('🤖 Assistant response:');
     console.log('-'.repeat(80));
@@ -60,7 +60,7 @@ async function testOrchestrator() {
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     // Verify memory was stored
-    const memories = await memoryAgent.getAllMemories();
+    const memories = await memoryAgent.getAllMemories('test-user');
     console.log(`✅ Memories stored in database: ${memories.length}`);
     if (memories.length > 0) {
       memories.forEach((mem, idx) => {
@@ -80,7 +80,7 @@ async function testOrchestrator() {
     console.log(`\n📨 User message: "${message2}"`);
     console.log(`🔑 Session ID: session-2 (different from session-1)\n`);
 
-    const { response: response2 } = await orchestrator.processMessage(message2, []);
+    const { response: response2 } = await orchestrator.processMessage(message2, [], undefined, 'session-2', 'test-user');
 
     console.log('🤖 Assistant response:');
     console.log('-'.repeat(80));
@@ -110,7 +110,7 @@ async function testOrchestrator() {
     console.log(`\n📨 User message: "${message3}"`);
     console.log(`🔑 Session ID: session-3\n`);
 
-    const { response: response3 } = await orchestrator.processMessage(message3, []);
+    const { response: response3 } = await orchestrator.processMessage(message3, [], undefined, 'session-3', 'test-user');
 
     console.log('🤖 Assistant response:');
     console.log('-'.repeat(80));
@@ -119,7 +119,7 @@ async function testOrchestrator() {
     console.log();
 
     // Verify workout was created
-    const workouts = await taskAgent.getWorkouts();
+    const workouts = await taskAgent.getWorkouts({ user_id: 'test-user' });
     console.log(`✅ Workouts in database: ${workouts.length}`);
     if (workouts.length > 0) {
       workouts.forEach((workout, idx) => {
@@ -139,8 +139,8 @@ async function testOrchestrator() {
     console.log('='.repeat(80));
     console.log();
 
-    const finalMemories = await memoryAgent.getAllMemories();
-    const finalWorkouts = await taskAgent.getWorkouts();
+    const finalMemories = await memoryAgent.getAllMemories('test-user');
+    const finalWorkouts = await taskAgent.getWorkouts({ user_id: 'test-user' });
 
     console.log(`✅ Total memories stored: ${finalMemories.length}`);
     console.log(`✅ Total workouts created: ${finalWorkouts.length}`);

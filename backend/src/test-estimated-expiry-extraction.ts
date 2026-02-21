@@ -18,7 +18,7 @@ async function testExtractionWithExpiry() {
     const message = 'I am allergic to peanuts and I enjoy cycling on weekends.';
     console.log('  Message:', message);
 
-    const result = await memoryAgent.extractMemories(message);
+    const result = await memoryAgent.extractMemories(message, 'test-user');
     console.log('  Extracted memories:', result.newMemories.length);
 
     if (result.newMemories.length === 0) {

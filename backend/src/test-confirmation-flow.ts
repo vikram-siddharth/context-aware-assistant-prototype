@@ -44,13 +44,17 @@ function setCurrentSessionId(sessionId: string): void {
   (orchestrator as any).currentSessionId = sessionId;
 }
 
+function setCurrentUserId(userId: string): void {
+  (orchestrator as any).currentUserId = userId;
+}
+
 async function getWorkoutCount(): Promise<number> {
-  const workouts = await taskAgent.getWorkouts();
+  const workouts = await taskAgent.getWorkouts({ user_id: 'test-user' });
   return workouts.length;
 }
 
 async function cleanWorkouts(): Promise<void> {
-  const workouts = await taskAgent.getWorkouts();
+  const workouts = await taskAgent.getWorkouts({ user_id: 'test-user' });
   for (const w of workouts) {
     await taskAgent.deleteWorkout(w.id);
   }
@@ -64,6 +68,7 @@ async function testConfirmProposalNoProposal() {
   console.log('\n--- Test A1: confirm_proposal with no pending proposal → error ---');
   const sessionId = 'test-a1';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
 
   // Ensure no proposal exists
   sessionController.clearPendingProposal(sessionId);
@@ -79,6 +84,7 @@ async function testConfirmProposalWithStashedProposal() {
   console.log('\n--- Test A2: confirm_proposal with stashed proposal → writes to DB ---');
   const sessionId = 'test-a2';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
 
   const countBefore = await getWorkoutCount();
 
@@ -119,6 +125,7 @@ async function testCreatePlanStashesProposal() {
   console.log('\n--- Test A3: create_plan stashes proposal, does NOT write to DB ---');
   const sessionId = 'test-a3';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
 
   // Initialize session memory cache (create_plan reads from it)
   sessionController.setSessionMemories(sessionId, []);
@@ -155,6 +162,7 @@ async function testCreatePlanThenConfirm() {
   console.log('\n--- Test A4: create_plan → confirm_proposal full round-trip ---');
   const sessionId = 'test-a4';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
 
   // Initialize session memory cache
   sessionController.setSessionMemories(sessionId, []);
@@ -191,6 +199,7 @@ async function testCreatePlanDateDefault() {
   console.log('\n--- Test A5: create_plan defaults to today when no date provided ---');
   const sessionId = 'test-a5';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
   sessionController.setSessionMemories(sessionId, []);
 
   await executeToolDirect('create_plan', {
@@ -206,6 +215,7 @@ async function testReplanOverwritesProposal() {
   console.log('\n--- Test A6: Re-planning overwrites existing proposal ---');
   const sessionId = 'test-a6';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
   sessionController.setSessionMemories(sessionId, []);
 
   // First plan
@@ -227,6 +237,7 @@ async function testDoubleConfirmFails() {
   console.log('\n--- Test A7: Double confirm fails (proposal already consumed) ---');
   const sessionId = 'test-a7';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
   sessionController.setSessionMemories(sessionId, []);
 
   // Create and confirm
@@ -260,6 +271,7 @@ async function testEndToEndPlanAndConfirm() {
     [],
     onEvent,
     sessionId,
+    'test-user',
   );
 
   console.log(`  Response preview: ${planResponse.slice(0, 150)}...`);
@@ -292,6 +304,7 @@ async function testEndToEndPlanAndConfirm() {
     history,
     onEvent,
     sessionId,
+    'test-user',
   );
 
   console.log(`  Response preview: ${confirmResponse.slice(0, 150)}...`);
@@ -323,6 +336,7 @@ async function testEndToEndReject() {
     [],
     undefined,
     sessionId,
+    'test-user',
   );
 
   assert(sessionController.hasPendingProposal(sessionId) === true, 'proposal stashed after plan request');
@@ -339,6 +353,7 @@ async function testEndToEndReject() {
     history,
     undefined,
     sessionId,
+    'test-user',
   );
 
   // Verify: no workout written
@@ -350,6 +365,7 @@ async function testPendingProposalInSystemPrompt() {
   console.log('\n--- Test A8: System prompt includes pending proposal context ---');
   const sessionId = 'test-a8';
   setCurrentSessionId(sessionId);
+  setCurrentUserId('test-user');
 
   // Initialize session
   sessionController.setSessionMemories(sessionId, []);
@@ -419,10 +435,12 @@ async function testToolDefinitions() {
   assert(toolNames.includes('get_workouts'), 'get_workouts tool exists');
   assert(!toolNames.includes('create_workout'), 'create_workout is NOT exposed to LLM');
 
-  // Check confirm_proposal has no required properties
+  // Check confirm_proposal has optional date and duration overrides
   const confirmTool = tools.find((t: any) => t.name === 'confirm_proposal');
   const props = Object.keys(confirmTool.input_schema.properties || {});
-  assert(props.length === 0, 'confirm_proposal takes no arguments');
+  assert(props.length === 2, 'confirm_proposal has 2 optional properties (date, duration)');
+  assert(props.includes('date'), 'confirm_proposal has date override');
+  assert(props.includes('duration'), 'confirm_proposal has duration override');
 
   // Check create_plan has date property
   const planTool = tools.find((t: any) => t.name === 'create_plan');
@@ -437,8 +455,8 @@ async function testDescribeToolAction() {
   assert(describeToolAction('confirm_proposal') === 'Saving your workout plan...', 'confirm_proposal action description correct');
   assert(describeToolAction('create_plan') === 'Creating a personalized workout plan...', 'create_plan action description correct');
   assert(describeToolAction('get_workouts') === 'Looking up your workouts...', 'get_workouts action description correct');
-  assert(describeToolAction('update_memory') === 'Updating my notes...', 'update_memory action description correct');
-  assert(describeToolAction('invalidate_memory') === 'Updating my notes...', 'invalidate_memory action description correct');
+  assert(describeToolAction('update_memory') === 'Updating a note...', 'update_memory action description correct');
+  assert(describeToolAction('invalidate_memory') === 'Retiring an old note...', 'invalidate_memory action description correct');
   assert(describeToolAction('unknown_tool') === 'Working on that...', 'unknown tool gets default description');
 }
 
@@ -459,7 +477,7 @@ async function main() {
   // Clean up
   console.log('Cleaning up existing data...');
   await cleanWorkouts();
-  const existingMemories = await memoryAgent.getAllMemories();
+  const existingMemories = await memoryAgent.getAllMemories('test-user');
   for (const m of existingMemories) await memoryAgent.deleteMemory(m.id);
   console.log(`Cleaned ${existingMemories.length} memories and all workouts\n`);
 

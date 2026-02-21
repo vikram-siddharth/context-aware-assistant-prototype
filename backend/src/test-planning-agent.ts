@@ -36,10 +36,10 @@ async function main() {
   console.log('--- Test 2: Plan with knee injury constraint ---');
 
   // First, extract a knee injury memory
-  await memoryAgent.extractMemories('I have a knee injury and cannot do high-impact exercises');
+  await memoryAgent.extractMemories('I have a knee injury and cannot do high-impact exercises', 'test-user');
 
   // Retrieve memories
-  const memories = await memoryAgent.getAllMemories();
+  const memories = await memoryAgent.getAllMemories('test-user');
   console.log(`Retrieved ${memories.length} memories from database\n`);
 
   // Generate plan with constraint
@@ -55,9 +55,9 @@ async function main() {
 
   // Test 3: Generate plan with multiple constraints and preferences
   console.log('--- Test 3: Plan with multiple context factors ---');
-  await memoryAgent.extractMemories('I prefer morning workouts and I want to build upper body strength');
+  await memoryAgent.extractMemories('I prefer morning workouts and I want to build upper body strength', 'test-user');
 
-  const allMemories = await memoryAgent.getAllMemories();
+  const allMemories = await memoryAgent.getAllMemories('test-user');
   const plan3 = await planningAgent.generatePlan(
     'Create a strength workout for me',
     allMemories
