@@ -126,6 +126,7 @@ export class Orchestrator {
     if (extractionResult.newMemories.length > 0) {
       const cached = sessionController.getSessionMemories(sessionId) || [];
       sessionController.setSessionMemories(sessionId, [...cached, ...extractionResult.newMemories]);
+      memories = [...memories, ...extractionResult.newMemories];
       console.log(`[Orchestrator] Added ${extractionResult.newMemories.length} new memories to session cache`);
     }
 
@@ -145,7 +146,7 @@ export class Orchestrator {
     }
 
     // Step 2: Build system prompt with memory context + detected refinement signals
-    const systemPrompt = this.buildSystemPrompt(sessionId, memories, detectedRefinements);
+    const systemPrompt = this.buildSystemPrompt(sessionId, memories, detectedRefinements, extractionResult.newMemories);
 
     // Step 3: Convert conversation history to Anthropic format
     const messages: Anthropic.MessageParam[] = [
@@ -432,7 +433,7 @@ export class Orchestrator {
   /**
    * Build a system prompt that includes relevant memories and any pending conflicts
    */
-  private buildSystemPrompt(sessionId: string, memories: Memory[], refinements: MemoryRefinement[] = []): string {
+  private buildSystemPrompt(sessionId: string, memories: Memory[], refinements: MemoryRefinement[] = [], newMemories: Memory[] = []): string {
     const currentDate = new Date().toISOString().split('T')[0];
 
     let systemPrompt = `You are a friendly, conversational fitness buddy who helps users track workouts and create personalized plans.
@@ -605,7 +606,7 @@ Use the memory ID from the User Context section above.
 
 ### Setting Expiry on Memories
 
-When a new fact is stored (you'll see it appear in the User Context), determine whether it has a natural endpoint:
+When new facts are extracted (listed in the "Newly Extracted Memories" section when present), determine whether they have natural endpoints:
 
 **Facts with natural endpoints** (set an expiry):
 - Injuries and physical conditions (heal over time)
@@ -657,6 +658,24 @@ Check-in rules:
   - Changed details → update via update_memory
 - Weave the check-in naturally — e.g., "By the way, your half-marathon was coming up — how did it go?" or "Last I knew, your ankle was on the mend. How's it feeling these days?"
 `;
+      }
+    }
+
+    // Signal newly extracted memories to the LLM (especially for expiry-setting)
+    if (newMemories.length > 0) {
+      systemPrompt += '\n## Newly Extracted Memories\n';
+      systemPrompt += 'The following facts were just extracted from the user\'s message and saved:\n\n';
+
+      const needExpiry: Memory[] = [];
+      for (const memory of newMemories) {
+        systemPrompt += `- [${memory.category.toUpperCase()}] (ID: ${memory.id}) "${memory.fact}" — persistence: ${memory.persistence}\n`;
+        if (memory.persistence !== 'permanent') {
+          needExpiry.push(memory);
+        }
+      }
+
+      if (needExpiry.length > 0) {
+        systemPrompt += '\nThe memories marked short_term or long_term have natural endpoints. For each one, follow the expiry-setting flow described in "Setting Expiry on Memories" above — ask the user about the timeframe at a natural point in this conversation.\n';
       }
     }
 
