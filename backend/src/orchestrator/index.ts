@@ -149,7 +149,7 @@ export class Orchestrator {
     }
 
     // Step 2: Build system prompt with memory context + detected refinement signals
-    const systemPrompt = this.buildSystemPrompt(sessionId, memories, detectedRefinements, extractionResult.newMemories);
+    let systemPrompt = this.buildSystemPrompt(sessionId, memories, detectedRefinements, extractionResult.newMemories);
 
     // Step 3: Convert conversation history to Anthropic format
     const messages: Anthropic.MessageParam[] = [
@@ -181,6 +181,10 @@ export class Orchestrator {
       while (response.stop_reason === 'tool_use' && iterationCount < maxIterations) {
         iterationCount++;
         console.log(`[Orchestrator] Tool use iteration ${iterationCount}`);
+
+        // Track whether a memory tool executes this iteration so we can
+        // rebuild the system prompt and remove stale "Detected Memory Changes"
+        let memoryMutatedThisIteration = false;
 
         // Extract tool calls from response
         const toolCalls = response.content.filter(
@@ -241,6 +245,10 @@ export class Orchestrator {
 
           const result = await this.executeTool(toolCall.name, toolCall.input);
 
+          if (['update_memory', 'invalidate_memory', 'set_memory_expiry'].includes(toolCall.name)) {
+            memoryMutatedThisIteration = true;
+          }
+
           toolResults.push({
             type: 'tool_result',
             tool_use_id: toolCall.id,
@@ -258,6 +266,13 @@ export class Orchestrator {
           role: 'user',
           content: toolResults,
         });
+
+        // After a memory mutation, rebuild the system prompt so the next LLM call
+        // sees updated memory context and no stale "Detected Memory Changes" section
+        if (memoryMutatedThisIteration) {
+          memories = sessionController.getSessionMemories(this.currentSessionId) || [];
+          systemPrompt = this.buildSystemPrompt(sessionId, memories, [], []);
+        }
 
         // Continue the conversation with tool results
         response = await this.client.messages.create({
@@ -408,7 +423,7 @@ export class Orchestrator {
       return getWorkoutsBase({ ...input, user_id: this.currentUserId });
     };
 
-    // update_memory: refresh session cache after update
+    // update_memory: refresh session cache after update, nudge expiry re-evaluation
     const updateMemory = registry.get('update_memory')!;
     const updateMemoryBase = updateMemory.execute;
     updateMemory.execute = async (input: any) => {
@@ -416,6 +431,13 @@ export class Orchestrator {
       if (result.success) {
         const refreshed = await memoryAgent.getAllMemories(this.currentUserId);
         sessionController.setSessionMemories(this.currentSessionId, refreshed);
+
+        // If the updated memory has an expiry, nudge the LLM to re-evaluate it
+        const updatedMemory = refreshed.find(m => m.id === input.memoryId);
+        if (updatedMemory?.estimated_expiry) {
+          const expiryStr = new Date(updatedMemory.estimated_expiry).toISOString().split('T')[0];
+          result.expiry_note = `This memory has an estimated expiry of ${expiryStr}, which was based on the previous version of this fact. The fact has changed — ask the user whether the recovery timeline has changed too.`;
+        }
       }
       return result;
     };
@@ -646,15 +668,20 @@ For facts with a natural endpoint, ask the user about the timeframe at a natural
 - **Preferences**: Ask for a window ("How long will the project keep you busy?")
 - **Constraints**: Ask gently, open-ended ("Do you have a sense of how long recovery might take?")
 
-If the user answers, use set_memory_expiry with their input.
+If the user answers, use set_memory_expiry with their input. For constraints, this is the only action needed — do not also call update_memory to embed timeline information in the fact text. Recovery timelines are metadata (captured by the expiry date), not part of the constraint itself.
 
 If the user ignores the question or gives an unhelpful answer, do not ask again. Wait patiently — the user has up to three turns to respond. If the user provides the timeframe in a later message (even if they're talking about something else), use set_memory_expiry with their answer. Only after three turns of no response should you fall back to estimating a reasonable expiry based on the fact text, category, and conversation context, and call set_memory_expiry with your best estimate.
 
-**The LLM always sets an expiry for facts with natural endpoints.** The conversational ask is an attempt to get better data, not a prerequisite.
+**Every fact with a natural endpoint must eventually have an expiry set.** Always ask the user first — the three-turn patience window and estimation fallback ensure this happens even if the user doesn't answer.
 
 If the user provides a specific date correction ("the race is in May, not April"), use set_memory_expiry to update it directly — no confirmation needed. If the user mentions a vague timeline change ("my recovery is taking longer than expected"), ask for clarification on the new timeframe before calling set_memory_expiry.
 
-**Expiry applies to updates too.** When you use update_memory and the new fact includes temporal information (a date, deadline, or timeframe), also call set_memory_expiry to capture that date. The fact text and the estimated_expiry field serve different purposes — the fact describes what is true, the expiry date drives check-in behavior. Both should be populated.
+**Expiry and memory updates.** This section applies when an existing memory is being updated — for newly extracted memories, always follow the ask-first flow in "Setting Expiry on Memories" above.
+
+After every update_memory call, check whether the memory has an estimated_expiry date. If it does, the old estimate was based on the old fact and may no longer be accurate. Handle expiry based on what changed:
+- **Fact changes + temporal info provided**: Call set_memory_expiry with the new date.
+- **Fact unchanged + only temporal info**: For constraints, just call set_memory_expiry — recovery timelines are metadata, not part of the fact. For goals, update the fact text too ("marathon" → "marathon in October") since the timeline is part of what the goal is.
+- **Fact changes + no temporal info**: The old expiry is likely wrong — a sore shoulder heals faster than a dislocated one; a specific goal has a different timeline than a vague one. Ask the user about the new timeline before calling set_memory_expiry. Follow the same ask-first expiry flow (ask → wait → estimate fallback).
 `;
 
       // Add expiring memories check-in section if any memories are expired or expiring soon
@@ -713,10 +740,11 @@ Check-in rules:
 
       systemPrompt += `
 Evaluate each detected change:
-- If the updated fact still represents a relevant constraint, preference, or goal → ask the user to confirm, then use update_memory on the next turn
-- If the updated fact means the original is fully resolved and no longer relevant → ask the user to confirm, then use invalidate_memory on the next turn
-- Follow the two-turn confirmation flow: ask first (no tool call), act after the user responds
-- Weave the confirmation naturally into your response — e.g., "Got it — sounds like your shoulder has improved. Want me to update what I have on file?"
+- If the updated fact still represents a relevant constraint, preference, or goal → use update_memory
+- If the updated fact means the original is fully resolved and no longer relevant → use invalidate_memory
+- **If the user's current message directly addresses this change** (e.g., they are answering a question you asked in a previous turn, or they volunteered the updated information themselves), their message IS the confirmation — proceed with the tool call immediately. Do not ask for confirmation of something the user just told you.
+- **If the change was inferred from indirect context** that the user hasn't explicitly addressed, follow the two-turn confirmation flow: ask first (no tool call), act after the user responds.
+- Weave any needed confirmation naturally into your response — e.g., "Got it — sounds like your shoulder has improved. Want me to update what I have on file?"
 `;
     }
 
