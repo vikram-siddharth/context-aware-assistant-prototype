@@ -1,4 +1,4 @@
-import type { OrchestratorEvent, MemoryData } from '../types';
+import type { OrchestratorEvent, MemoryData, WorkoutData } from '../types';
 
 export async function sendMessage(
   message: string,
@@ -60,4 +60,21 @@ export async function fetchMemories(userId: string): Promise<MemoryData[]> {
 
   const data = await response.json();
   return data.memories;
+}
+
+export async function fetchWorkouts(userId: string): Promise<WorkoutData[]> {
+  const today = new Date().toISOString().split('T')[0];
+  const params = new URLSearchParams({
+    userId,
+    status: 'scheduled',
+    startDate: today,
+  });
+  const response = await fetch(`/api/workouts?${params}`);
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to fetch workouts');
+  }
+
+  return response.json();
 }

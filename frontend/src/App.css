@@ -360,6 +360,142 @@
   font-weight: 600;
 }
 
+/* Workout modal */
+.workout-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.workout-modal {
+  background: #1a1a2e;
+  border: 1px solid #333;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 580px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.workout-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #333;
+}
+
+.workout-modal__header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.workout-modal__close {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 1.5rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.workout-modal__close:hover {
+  opacity: 1;
+}
+
+.workout-modal__body {
+  overflow-y: auto;
+  padding: 1rem 1.25rem;
+}
+
+.workout-modal__status {
+  color: #888;
+  text-align: center;
+  margin: 2rem 0;
+}
+
+.workout-modal__status--error {
+  color: #f87171;
+}
+
+.workout-modal__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.workout-modal__item {
+  border: 1px solid #2a2a3d;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  transition: border-color 0.2s;
+}
+
+.workout-modal__item--expandable {
+  cursor: pointer;
+}
+
+.workout-modal__item--expandable:hover {
+  border-color: #555;
+}
+
+.workout-modal__item--expanded {
+  border-color: #646cff;
+}
+
+.workout-modal__row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.workout-modal__type {
+  font-weight: 600;
+}
+
+.workout-modal__duration {
+  color: #888;
+}
+
+.workout-modal__date {
+  color: #888;
+  margin-left: auto;
+}
+
+.workout-modal__badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  background: #646cff;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.workout-modal__description {
+  margin: 0.5rem 0 0;
+  padding-top: 0.5rem;
+  border-top: 1px solid #2a2a3d;
+  font-size: 0.85rem;
+  color: #aaa;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 /* Login screen */
 .login-screen {
   display: flex;
@@ -467,6 +603,28 @@
   }
 
   .memory-modal__backdrop {
+    background: rgba(0, 0, 0, 0.3);
+  }
+
+  .workout-modal {
+    background: #fff;
+    border-color: #ddd;
+  }
+
+  .workout-modal__header {
+    border-bottom-color: #ddd;
+  }
+
+  .workout-modal__item {
+    border-color: #eee;
+  }
+
+  .workout-modal__description {
+    border-top-color: #eee;
+    color: #666;
+  }
+
+  .workout-modal__backdrop {
     background: rgba(0, 0, 0, 0.3);
   }
 

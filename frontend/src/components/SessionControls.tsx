@@ -1,13 +1,17 @@
 type Props = {
   onNewChat: () => void;
   onOpenMemories: () => void;
+  onOpenWorkouts: () => void;
   onSwitchUser: () => void;
   disabled: boolean;
 };
 
-export default function SessionControls({ onNewChat, onOpenMemories, onSwitchUser, disabled }: Props) {
+export default function SessionControls({ onNewChat, onOpenMemories, onOpenWorkouts, onSwitchUser, disabled }: Props) {
   return (
     <div className="session-controls">
+      <button onClick={onOpenWorkouts} disabled={disabled}>
+        Workouts
+      </button>
       <button onClick={onOpenMemories} disabled={disabled}>
         Memories
       </button>

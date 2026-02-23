@@ -5,6 +5,7 @@ import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
 import SessionControls from './components/SessionControls';
 import MemoryModal from './components/MemoryModal';
+import WorkoutModal from './components/WorkoutModal';
 import LoginScreen from './components/LoginScreen';
 import './App.css';
 
@@ -14,6 +15,7 @@ function App() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [pendingReasoning, setPendingReasoning] = useState<ReasoningStepData[]>([]);
   const [memoryModalOpen, setMemoryModalOpen] = useState(false);
+  const [workoutModalOpen, setWorkoutModalOpen] = useState(false);
   const sessionIdRef = useRef(crypto.randomUUID());
 
   const handleLogin = useCallback((id: string) => {
@@ -82,6 +84,7 @@ function App() {
         <SessionControls
           onNewChat={handleNewChat}
           onOpenMemories={() => setMemoryModalOpen(true)}
+          onOpenWorkouts={() => setWorkoutModalOpen(true)}
           onSwitchUser={handleSwitchUser}
           disabled={isStreaming}
         />
@@ -95,6 +98,7 @@ function App() {
         <MessageInput onSend={handleSend} disabled={isStreaming} />
       </main>
       <MemoryModal open={memoryModalOpen} onClose={() => setMemoryModalOpen(false)} userId={userId} />
+      <WorkoutModal open={workoutModalOpen} onClose={() => setWorkoutModalOpen(false)} userId={userId} />
     </div>
   );
 }

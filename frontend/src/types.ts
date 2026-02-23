@@ -11,6 +11,16 @@ export type MemoryData = {
   created_at: string;
 };
 
+export type WorkoutData = {
+  id: string;
+  type: string;
+  duration: number;
+  date: string;
+  description: string | null;
+  status: string;
+  created_at: string;
+};
+
 export type ReasoningStepData = {
   type: 'thinking' | 'action';
   content: string;
